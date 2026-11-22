@@ -10,7 +10,7 @@
 
 | Fase | Prompt | Depende de | Estado | Notas |
 |---|---|---|---|---|
-| F1 | [Base modular](F1-base-modular.md) | — | ⬜ | |
+| F1 | [Base modular](F1-base-modular.md) | — | ✅ | 2026-11-21: paquete `lighthouse/` v0.4.0 con config persistente, log y `python -m lighthouse --test`. Notas F2: `audio.Audio(on_block)` (`refresh/info/open/close/reconnect`) y `ui.App.on_block`; config = `config.load(defaults)/save(d)` con defaults tomados de `App.snapshot()` (nueva perilla = widget registrado en `vars`/`checks` o llave nueva en snapshot+apply). |
 | F2 | [Entrada, latencia y prioridad](F2-entrada-y-latencia.md) | F1 | ⬜ | |
 | F3 | [Ejecutable](F3-ejecutable.md) | F2 | ⬜ | |
 | F4 | [Looks por teclado (mapa del cliente)](F4-looks-teclado.md) | F3 | ⬜ | |
