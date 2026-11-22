@@ -41,8 +41,8 @@ def check_sin_colores_sueltos():
     import ast
     import re
     import sys
-    from . import layout, tips, ui
-    for mod in (ui, layout, tips):
+    from . import layout, tips, tutorial, ui
+    for mod in (ui, layout, tips, tutorial):
         path = getattr(mod, "__file__", None)
         if getattr(sys, "frozen", False) or not path or not path.endswith(".py"):
             print("aviso: sin código fuente (exe), se salta el check de colores sueltos")
@@ -58,11 +58,11 @@ def check_sin_colores_sueltos():
                and (re.fullmatch(r"#[0-9a-fA-F]{3,12}", n.value) or n.value.lower() in COLOR_NAMES
                     or n.value.startswith("System"))]
         assert not bad, f"colores sueltos en {os.path.basename(path)}: {bad}"
-    print("ok: ui.py, layout.py y tips.py sin literales de color (salvo PALETTE y KELVIN)")
+    print("ok: ui.py, layout.py, tips.py y tutorial.py sin literales de color (salvo PALETTE y KELVIN)")
 
 
-# ids del catálogo (fases/diseno-ui.md §5.4) que existen desde F10. Faltan a propósito los de F11–F14
-# (ayuda.tutorial, ayuda.intro, ayuda.tema, tut.*) y calib.salir (se crea al abrir Calibrar sincronía).
+# ids del catálogo (fases/diseno-ui.md §5.4) que existen desde F11. Faltan a propósito los de F13–F14
+# (ayuda.intro, ayuda.tema) y calib.salir (se crea al abrir Calibrar sincronía).
 CATALOG = {
     *(f"look.{k}" for k in "1234567QWERTYUZ"),
     "vivo.punto", "vivo.medidor", "vivo.bpm", "vivo.look", "vivo.estado", "vivo.previa", "vivo.teclas",
@@ -80,7 +80,8 @@ CATALOG = {
     "salidas.agregar", "salidas.quitar", "salidas.tv", "salidas.identificar", "salidas.calibrar", "sal.nombre",
     "sal.monitor", "sal.completa", "sal.destino", "sal.puerto", "sal.master", "sal.retardo", "sal.contenido",
     "sal.logo", "sal.logo_buscar", "sal.unirse", "ayuda.carpeta", "vista.fijar", "vista.ampliar", "vista.sin_foco",
-    "ayuda.tips"}
+    "ayuda.tips", "ayuda.tutorial", "tut.ver", "tut.ahora_no", "tut.no_preguntar", "tut.atras", "tut.siguiente",
+    "tut.omitir"}
 
 
 def check_layout():
@@ -507,6 +508,153 @@ def check_tips():
         app.quit()
 
 
+def check_tutorial():
+    """F11: pasos válidos, textos, ring_rects y bubble_pos puros, recorrido sin ventana, avance por acción,
+    estados de la pregunta de primer arranque y teclas de show intactas con el tutorial abierto."""
+    from . import tutorial
+    from .tutorial import STEPS, bubble_pos, ring_rects
+    from .ui import TABS, App, keys_live
+    app = App(headless=True)
+    tut = app.tut
+    try:
+        # 1 · objetivos válidos
+        ids = set(app.ids.values())
+        for st in STEPS:
+            assert st.id is None or st.id in ids, f"paso {st.title!r}: el control {st.id!r} no existe"
+            assert st.tab is None or st.tab in TABS, f"paso {st.title!r}: la pestaña {st.tab!r} no existe"
+        assert len(STEPS) == 10 and STEPS[0].id is None
+        # 2 · textos
+        for st in STEPS:
+            assert st.title.strip() and st.text.strip() and len(st.text) <= 240, (st.title, len(st.text))
+        # 3 · ring_rects: rodea sin tapar, con su grosor y su margen
+        n = 0
+        for x, y, w, h in ((0, 0, 50, 20), (100, 80, 200, 30), (7, 3, 1, 1)):
+            for g, m in ((3, 3), (3, 0), (6, 2)):
+                rs = ring_rects(x, y, w, h, g, m)
+                assert len(rs) == 4 and all(tutorial._overlap(r, (x, y, w, h)) == 0 for r in rs), (rs, g, m)
+                assert min(r[0] for r in rs) == x - m - g and min(r[1] for r in rs) == y - m - g
+                assert max(r[0] + r[2] for r in rs) == x + w + m + g and max(r[1] + r[3] for r in rs) == y + h + m + g
+                assert rs[0][3] == rs[1][3] == rs[2][2] == rs[3][2] == g  # grosor
+                assert rs[2][0] + rs[2][2] + m == x and rs[3][0] - m == x + w  # margen a los lados
+                n += 1
+        # 4 · bubble_pos: centro, bordes y esquinas de dos ventanas; sin objetivo, centrado
+        tw, th, bub = 140, 30, (340, 170)
+        for win in ((0, 0, 1366, 700), (0, 0, 700, 420)):
+            xs, ys = (0, (win[2] - tw) // 2, win[2] - tw), (0, (win[3] - th) // 2, win[3] - th)
+            for x in xs:
+                for y in ys:
+                    t = (x, y, tw, th)
+                    bx, by = bubble_pos(t, bub, win)
+                    assert 0 <= bx and bx + bub[0] <= win[2] and 0 <= by and by + bub[1] <= win[3], (t, win, bx, by)
+                    assert tutorial._overlap((bx, by, *bub), t) == 0, (t, win, bx, by)
+            assert bubble_pos(None, bub, win) == ((win[2] - bub[0]) // 2, (win[3] - bub[1]) // 2)
+        # 5 · recorrido completo sin ventana (también desde Mini); Atrás en el paso 1 no hace nada
+        def placed():
+            return [f.place_info() for f in tut.ring] + [tut.box.place_info()]
+        app.set_tutorial("preguntar")
+        tab0, vista0 = app.tab_var.get(), app.vista
+        tut.start()
+        assert tut.on and tut.i == 0 and tut.box.place_info()
+        tut.back()
+        assert tut.i == 0
+        for i in range(len(STEPS)):
+            assert tut.i == i and tut.on
+            tut.next()
+        assert not tut.on and app.tut_state == "visto" and not any(placed()), placed()
+        assert app.tab_var.get() == tab0 and app.vista == vista0 and "on" not in app.tip.__dict__
+        app.enter_mini()  # desde Mini: pasa a la vista normal y al terminar vuelve a Mini
+        tut.start()
+        assert app.vista == "auto" and app.draw.mode != "mini", (app.vista, app.draw.mode)
+        tut.skip()
+        assert app.vista == "mini" and app.draw.mode == "mini" and not any(placed())
+        app.leave_mini()
+        # 6 · avance por acción (reloj simulado) y "Ya está" cuando ya se cumplía
+        app.select_look("1")
+        tut.start()
+        for _ in range(3):
+            tut.next()
+        assert STEPS[tut.i].id == "look.2" and tut.state == "espera"
+        tut.tick(100.0)
+        assert tut.i == 3 and tut.state == "espera"
+        app.select_look("2")
+        tut.tick(100.0)
+        assert tut.state == "hecho" and tut.i == 3
+        tut.tick(100.5)
+        assert tut.i == 3
+        tut.tick(100.71)
+        assert tut.i == 4, tut.i
+        tut.back()  # el look 2 ya está activo: se muestra "✓ Ya está" y espera
+        assert tut.i == 3 and tut.state == "ya" and tut.status.cget("text") == "✓ Ya está"
+        tut.tick(200.0)
+        tut.tick(300.0)
+        assert tut.i == 3 and tut.state == "ya"
+        tut.next()
+        tut.next()  # Blackout: se cumple al activarlo y desactivarlo
+        assert STEPS[tut.i].id == "blackout" and tut.state == "espera"
+        app.key_action("blackout")
+        tut.tick(400.0)
+        tut.tick(401.0)
+        assert tut.state == "espera" and tut.i == 5
+        app.key_action("blackout")
+        tut.tick(402.0)
+        assert tut.state == "hecho"
+        app.key_action("blackout")  # omitir con las pantallas apagadas: no quedan en blackout
+        tut.skip()
+        assert not app.scene.blackout and not app.bo.get() and not tut.on
+        app.select_look("1")
+        # 7 · estados de la pregunta de primer arranque
+        app.set_tutorial("preguntar")
+        app.band_off = False
+        app.no_ask.set(False)
+        app.update_band()
+        assert app.band_on
+        app.band_no()
+        assert app.tut_state == "preguntar" and not app.band_on and app.band_off
+        app.band_off = False
+        app.no_ask.set(True)
+        app.band_no()
+        assert app.tut_state == "no_preguntar" and not app.band_on
+        app.no_ask.set(False)
+        app.set_tutorial("preguntar")
+        app.band_off = False
+        app.intro_on = True
+        assert not app.band_wanted()  # la banda espera a que termine la intro
+        app.intro_on = False
+        assert app.band_wanted()
+        tut.start()
+        assert not app.band_on  # con el tutorial abierto no hay banda
+        tut.next()
+        tut.skip()
+        assert app.tut_state == "visto" and not tut.on
+        bad = dict(app.snapshot()["ui"], tutorial="quizás")
+        app.apply_ui(bad)
+        assert app.tut_state == "preguntar" and app.snapshot()["ui"]["tutorial"] == "preguntar"
+        # 8 · las teclas de show no se pausan con el tutorial abierto (ni con Navegar con Tab)
+        base = keys_live(True, False, app.typing, app.nav_focus, False, False)
+        app.tab_nav.set(True)
+        tut.start()
+        assert base and keys_live(True, False, app.typing, app.nav_focus, False, False) == base
+        assert not app.typing and not app.nav_focus
+        for b in (tut.back_b, tut.next_b, tut.skip_b):
+            assert str(b.cget("takefocus")) == "0", b
+        tk_classes = {w.winfo_class() for w in _descendants(tut.box)}
+        assert not tk_classes & {"Entry", "TEntry", "Text", "TCombobox", "Listbox"}, tk_classes
+        tut.skip()
+        app.tab_nav.set(False)
+        app.set_tutorial("preguntar")
+        print(f"ok: tutorial: {len(STEPS)} pasos con objetivo, pestaña y texto (≤ 240) válidos; ring_rects ({n} casos) "
+              f"y bubble_pos (1366×700 y 700×420, centro/bordes/esquinas); recorrido completo (también desde "
+              f"Mini); avance por acción y '✓ Ya está'; estados de la pregunta; teclas de show sin pausa")
+    finally:
+        app.quit()
+
+
+def _descendants(w):
+    for c in w.winfo_children():
+        yield c
+        yield from _descendants(c)
+
+
 def check_tema():
     from . import theme
     for n in theme.THEMES:
@@ -769,3 +917,5 @@ def selftest():
     check_mini()
     # --- F10: tooltips (cobertura de todos los controles, textos, colocación y títulos)
     check_tips()
+    # --- F11: tutorial interactivo (pasos, geometría pura, recorrido, avance por acción, pregunta, teclas)
+    check_tutorial()

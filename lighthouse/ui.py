@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 
-from . import VERSION, config, layout, net, outputs, scene, theme, tips, win32
+from . import VERSION, config, layout, net, outputs, scene, theme, tips, tutorial, win32
 from .audio import Audio
 from .engine import BLOCK, Engine
 from .outputs import JOIN, LOGO, CONTENT, MAX_OUTPUTS, compose_output, make_output, remote_output
@@ -59,6 +59,7 @@ MODE_SHORT = [m.capitalize() for m in MODES]  # lista desplegable (densa, ahorra
 COLOR_MODES = ["Blanco", "Temperatura", "Paleta (cambia en cada flash)"]
 TABS = {"show": "Show", "audio": "Audio", "salidas": "Salidas", "ayuda": "Ayuda"}  # id -> etiqueta
 VISTAS = {"auto": "Automática", "compacto": "Compacta", "mini": "Mini"}
+TUTORIAL = ("preguntar", "no_preguntar", "visto")  # ui.tutorial
 STATES = ("BLACKOUT", "BUMP", "AUTO · TRANQUILO", "AUTO · PULSO", "PULSO", "TRANQUILO", "MANUAL")
 AUTO_PREFIX = "AUTO · "  # en densa no se muestra: el modo ya está en la lista desplegable
 BPM_MANUAL = {False: " (manual)", True: " (man.)"}  # sufijo del BPM manual (cómoda / densa)
@@ -195,6 +196,10 @@ class App:
         self.jobs = {}
         self.sb_on = False
         self.t_layout = 0.0         # ms de la última recolocación
+        self.tut_state = "preguntar"  # ui.tutorial: preguntar · no_preguntar · visto
+        self.band_off = False       # "Ahora no": sin banda hasta el próximo arranque
+        self.band_on = False        # la banda de primer arranque está a la vista
+        self.intro_on = False       # F13: mientras corre la intro no se muestra la banda
 
         root = self.root = tk.Tk()
         root.withdraw()  # sin parpadeo mientras se construye; se muestra al final (salvo headless)
@@ -215,10 +220,11 @@ class App:
         self.label_px = body_font.measure("0") * LABEL_W  # las etiquetas de fila se parten a este ancho
         # zonas (fases/diseno-ui.md §2.1): 0 barra de looks · 1 franja En vivo · 2 pestañas · 3 tarjetas
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(3, weight=1)
+        root.rowconfigure(4, weight=1)
         self.build_looks()
         self.build_live()
         self.bar.lift(self.live)  # en Mini la barra de looks se empaca dentro de la franja: debe quedar encima
+        self.build_band()
         self.build_tabs()
         self.build_body()
         self.build_show()
@@ -230,6 +236,7 @@ class App:
         root.bind("<Escape>", lambda e: root.focus_set())  # devuelve el foco a la ventana (teclas activas)
         root.bind("<MouseWheel>", self.on_wheel)
         self.tip = tips.Tooltip(self)  # después de los binds de la raíz: los suyos van con add="+"
+        self.tut = tutorial.Tutorial(self)
 
         # config: los defaults son los valores iniciales de arriba (Engine + UI); lo guardado válido los pisa
         defaults = self.defaults = self.snapshot()
@@ -598,11 +605,59 @@ class App:
             self.chip_vis[lb] = bool(text)
             self.pack_chips()
 
+    # --- banda de primer arranque (fases/diseno-ui.md §6.1): no modal, entre la franja En vivo y las pestañas
+    def build_band(self):
+        tk, ttk, S = self.tk, self.ttk, self.sp
+        fr = self.band_fr = ttk.Frame(self.root, padding=(S("md"), S("sm")))
+        self.no_ask = tk.BooleanVar(value=False)
+        right = [self.reg(ttk.Checkbutton(fr, text="No volver a preguntar", variable=self.no_ask, takefocus=0),
+                          "tut.no_preguntar"),
+                 self.reg(ttk.Button(fr, text="Ahora no", takefocus=0, command=self.band_no), "tut.ahora_no"),
+                 self.reg(ttk.Button(fr, text="Ver tutorial", takefocus=0, command=self.tut_start), "tut.ver")]
+        for w in right:
+            w.pack(side="right", padx=(S("md"), 0))
+        lb = ttk.Label(fr, text="¿Primera vez con LightHouse? Recorrido de 2 minutos.", wraplength=self.px(TEXT_W))
+        lb.pack(side="left", fill="x", expand=True)
+
+        def wrap(e):  # el texto se parte en el ancho que dejan los botones (solo si cambia: sin bucles)
+            w = max(e.width - sum(b.winfo_reqwidth() + S("md") for b in right) - 2 * S("md"), self.px(140))
+            if str(lb.cget("wraplength")) != str(w):
+                lb.configure(wraplength=w)
+        fr.bind("<Configure>", wrap)
+
+    def band_wanted(self):
+        return (self.tut_state == "preguntar" and not self.band_off and self.draw is not None
+                and self.draw.mode != "mini" and not self.tut.on and not self.intro_on)
+
+    def update_band(self):
+        """Muestra u oculta la banda (nunca en Mini, con el tutorial abierto ni durante la intro)."""
+        self.band_on = want = self.band_wanted()
+        if self.headless:  # sin ventana: solo el estado, para el self-check
+            return
+        if want:
+            self.band_fr.grid(row=2, column=0, columnspan=2, sticky="ew")
+        else:
+            self.band_fr.grid_remove()
+
+    def band_no(self):
+        """Ahora no: oculta la banda; con la casilla marcada no vuelve a preguntar nunca."""
+        self.band_off = True
+        if self.no_ask.get():
+            self.tut_state = "no_preguntar"
+        self.update_band()
+
+    def tut_start(self):
+        self.tut.start()
+
+    def set_tutorial(self, state):
+        self.tut_state = state
+        self.update_band()
+
     # --- zona C: pestañas
     def build_tabs(self):
         S = self.sp
         tb = self.tabbar = self.ttk.Frame(self.root, style="Bg.TFrame", padding=(S("md"), S("md"), S("md"), 0))
-        tb.grid(row=2, column=0, columnspan=2, sticky="ew")
+        tb.grid(row=3, column=0, columnspan=2, sticky="ew")
         self.tab_var = self.tk.StringVar(value="show")
         for tid, name in TABS.items():
             self.segment(tb, self.tab_var, tid, f"  {name}  ", f"tab.{tid}", under="bg", style="Bg.TFrame",
@@ -615,7 +670,7 @@ class App:
         cv = self.body_cv = tk.Canvas(self.root, highlightthickness=0, bd=0, width=1, height=1,
                                       yscrollincrement=self.px(24))
         theme.paint(cv, bg="bg")
-        cv.grid(row=3, column=0, sticky="nsew")
+        cv.grid(row=4, column=0, sticky="nsew")
         self.body_sb = ttk.Scrollbar(self.root, orient="vertical", command=cv.yview, takefocus=0)
         cv.configure(yscrollcommand=self.body_sb.set)
         body = self.body = ttk.Frame(cv, style="Bg.TFrame", padding=(S("sm"), S("sm"), S("sm"), S("sm")))
@@ -952,6 +1007,8 @@ class App:
         for title, path in (("Configuración", config.path()), ("Registros (lighthouse.log)", config.log_dir())):
             ttk.Label(f, text=title, style="Muted.TLabel").pack(anchor="w", pady=(S("md"), 0))
             ttk.Label(f, text=path, wraplength=self.px(TEXT_W)).pack(anchor="w")
+        self.reg(ttk.Button(f, text="Ver tutorial", command=self.tut_start, takefocus=0),
+                 "ayuda.tutorial").pack(anchor="w", pady=(S("md"), 0))
         self.reg(ttk.Button(f, text="Abrir carpeta de registros", command=self.open_logs, takefocus=0),
                  "ayuda.carpeta").pack(anchor="w", pady=(S("md"), 0))
         self.tips_on = self.tk.BooleanVar(value=True)  # ui.tips
@@ -1027,6 +1084,7 @@ class App:
                 w.grid_remove()
             self.sb_on = False
         self.root.title("LightHouse · Control" if on else "LightHouse")
+        self.update_band()
 
     def place_cards(self):
         """Tarjetas de la pestaña activa en sus columnas (layout.plan); las de otras pestañas, grid_remove."""
@@ -1069,7 +1127,7 @@ class App:
         if need != self.sb_on:
             self.sb_on = need
             if need:
-                self.body_sb.grid(row=3, column=1, sticky="ns")
+                self.body_sb.grid(row=4, column=1, sticky="ns")
             else:
                 self.body_sb.grid_remove()
         if not need:
@@ -1279,7 +1337,7 @@ class App:
         on = self.tab_nav.get()
         for w in self.ids:
             try:
-                if w.winfo_class() in FOCUSABLE:
+                if w.winfo_class() in FOCUSABLE and not self.tut.owns(w):  # el globo del tutorial nunca toma foco
                     w.configure(takefocus=1 if on else 0)
             except self.tk.TclError:  # p. ej. el botón de Calibrar, ya cerrado
                 pass
@@ -1716,7 +1774,8 @@ class App:
                  look_colors={k: list(v) for k, v in self.look_hex.items()},
                  outputs=[o.snapshot() for o in self.outputs],
                  ui={"theme": self.theme_name, "vista": self.vista, "tab": self.tab_var.get(),
-                     "avanzado": dict(self.adv_open), "tab_nav": self.tab_nav.get(), "tips": self.tips_on.get()})
+                     "avanzado": dict(self.adv_open), "tab_nav": self.tab_nav.get(), "tips": self.tips_on.get(),
+                     "tutorial": self.tut_state})
         if self.root.winfo_viewable():  # en Mini (a mano) la ventana es la mini; geo_control, la normal
             if self.vista != "mini":
                 self.geo["geo_control"] = self.root.geometry()
@@ -1792,6 +1851,9 @@ class App:
             self.set_adv(cid, u["avanzado"].get(cid, False))
         self.tab_nav.set(u["tab_nav"])
         self.tips_on.set(u["tips"])
+        if u["tutorial"] not in TUTORIAL:
+            log.warning("config: ui.tutorial=%r no es válida; se usa 'preguntar'", u["tutorial"])
+        self.set_tutorial(u["tutorial"] if u["tutorial"] in TUTORIAL else "preguntar")
         if self.draw:
             self.show_tab()
 
@@ -1994,6 +2056,8 @@ class App:
         self.note_set(self.net_lbl, "\n".join(f"{o.name}: {o.status()}" for o in self.outputs if o.remote))
         self.note_set(self.out_warn, "\n".join(
             w for o in self.outputs for w in (f"{o.name}: {o.warn}" if o.warn else "", o.logo_err) if w))
+        if self.tut.on:
+            self.tut.tick()
 
     def put(self, fn, *args, **kw):
         """fn(*args, **kw) solo si cambió desde la última vez: cada config/coords hace redibujar a Tk."""

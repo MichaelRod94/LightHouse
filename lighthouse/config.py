@@ -31,6 +31,8 @@ def _migrate(raw):
     # que ponen los defaults; ui.vista ya aceptaba "mini"
     # F10 (sin subir la versión): ui.tips (ayudas al pasar el ratón, activo por defecto) es una llave nueva
     # que ponen los defaults
+    # F11 (sin subir la versión): ui.tutorial ("preguntar" · "no_preguntar" · "visto") es una llave nueva
+    # que ponen los defaults; un valor inválido vuelve a "preguntar" (App.apply_ui)
     if v < VERSION:
         log.info("config migrada de v%s a v%d", v, VERSION)
 

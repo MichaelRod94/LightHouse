@@ -9,6 +9,9 @@ LightHouse escucha la musica y la convierte en luz. No necesitas instalar nada.
   "Desbloquear" -> Aceptar. Despues descomprime la carpeta completa
   (clic derecho -> Extraer todo).
 - Abre LightHouse.exe con doble clic.
+- Al abrirlo por primera vez te ofrece un recorrido de 2 minutos (puedes
+  decir "Ahora no"). Se repite cuando quieras: pestaña Ayuda -> "Ver
+  tutorial"; se cierra con Esc u "Omitir tutorial".
 - Si Windows muestra "SmartScreen": clic en "Mas informacion" y luego en
   "Ejecutar de todas formas". Es normal: el programa no esta firmado.
 - Microfono: Configuracion de Windows -> Privacidad y seguridad -> Microfono ->

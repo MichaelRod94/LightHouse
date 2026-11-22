@@ -39,6 +39,7 @@ OSCURO = {
     "radius.sm": 3, "radius.md": 6,
     "size.look_w": 60, "size.look_h": 44, "size.look_w_dense": 44, "size.look_h_dense": 32,
     "size.blackout_w": 96, "size.control_h": 28, "size.card_min_w": 340, "size.tip_max_w": 320,
+    "size.tut_ring": 3, "size.tut_margin": 3, "size.tut_gap": 8, "size.tut_wrap": 300,  # anillo, hueco y globo
     # ventana
     "window.alpha": 1.0, "window.alpha_hover": 1.0, "window.dark_titlebar": True,
     "window.caption": "#14161A", "window.caption_fg": "#ECEFF4", "ttk.base": "clam",

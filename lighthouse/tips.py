@@ -192,6 +192,16 @@ TIPS = {
     # ayuda
     "ayuda.tips": "Muestra explicaciones como esta al dejar el ratón sobre un control.",
     "ayuda.carpeta": "Abre la carpeta con el archivo que hay que enviar si algo falla.",
+    "ayuda.tutorial": "Abre un recorrido de 2 minutos que te enseña lo básico. Puedes repetirlo las veces que "
+                      "quieras y salir con Esc.",
+    # tutorial (banda de primer arranque y globo)
+    "tut.ver": "Empieza el recorrido de 2 minutos. La luz sigue funcionando mientras tanto.",
+    "tut.ahora_no": "Cierra este aviso por ahora. El recorrido siempre está en la pestaña Ayuda.",
+    "tut.no_preguntar": 'Marca la casilla y pulsa "Ahora no" para que este aviso no vuelva a salir al abrir '
+                        "LightHouse.",
+    "tut.atras": "Vuelve al paso anterior.",
+    "tut.siguiente": "Pasa al paso siguiente. También con Enter. En el último paso termina el recorrido.",
+    "tut.omitir": "Cierra el recorrido ahora mismo. No cambia ningún ajuste. También con Esc.",
 }
 
 # primera línea (negrita): la etiqueta visible del control. Los looks y los modos se arman en title()
@@ -227,7 +237,9 @@ LABELS = {
     "sal.master": "Brillo de esta salida (%)", "sal.retardo": "Retraso de esta pantalla (ms)",
     "sal.contenido": "Contenido", "sal.logo": "Logo (PNG)", "sal.logo_buscar": "Buscar logo",
     "sal.unirse": "Seguir los looks", "calib.salir": "Salir", "ayuda.tips": "Mostrar ayudas",
-    "ayuda.carpeta": "Abrir carpeta de registros",
+    "ayuda.carpeta": "Abrir carpeta de registros", "ayuda.tutorial": "Ver tutorial", "tut.ver": "Ver tutorial",
+    "tut.ahora_no": "Ahora no", "tut.no_preguntar": "No volver a preguntar", "tut.atras": "Atrás",
+    "tut.siguiente": "Siguiente", "tut.omitir": "Omitir tutorial",
     **{f"avanzado.{c}": "Avanzado" for c in ADV_CARDS},
 }
 MODE_ACTIONS = {"modo.auto": ("Modo Auto", "auto"), "modo.pulso": ("Modo Pulso", "pulso"),
