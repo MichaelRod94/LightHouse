@@ -39,7 +39,8 @@ Si el loopback no funciona (por ejemplo, rekordbox usa ASIO):
 
 4. LOOKS Y ATAJOS DE TECLADO
 ----------------------------
-Las teclas funcionan con LightHouse al frente (ventana Control o ventana Luz).
+Las teclas funcionan con LightHouse al frente (ventana Control o una salida),
+salvo mientras escribes en un campo de texto ("TECLAS EN PAUSA": Enter vuelve).
 Cada look queda activo hasta elegir otro; tambien se eligen con el mouse en la
 barra de arriba. Al abrir, siempre arranca en 1 Blanco.
 
@@ -62,7 +63,11 @@ barra de arriba. Al abrir, siempre arranca en 1 Blanco.
 - F1, F2, F3, F4: modos Auto / Pulso / Tranquilo / Manual   (antes 1 a 4)
 - 0 (o el 0 del numerico): tap tempo, toca al ritmo 3 o mas veces (antes T)
 - + / - (tambien los del numerico): sensibilidad +/- 0.1 (de 1.0 a 3.0)
-- F11 o doble clic en la ventana Luz: pantalla completa; Esc: salir
+- Salidas (pestaña "Salidas", hasta 4): cada una con su monitor, master,
+  retardo extra, contenido (Luz / Luz + logo PNG) y "Unirse a looks"
+  (siempre / excepto en 1 / nunca). Boton "Pantalla completa / Ventana";
+  en la salida, doble clic alterna y Esc vuelve a ventana. "Identificar"
+  rotula cada monitor 3 s; "Calibrar retardo" explica el ajuste con camara.
 - Panel "Teclado" -> "Teclas globales": las teclas funcionan aunque otro
   programa este al frente. OJO: tambien llegan a rekordbox si esta al frente.
 - Panel "Respuesta" -> "Muy reactivo": golpes mas cortos y rapidos (drops).

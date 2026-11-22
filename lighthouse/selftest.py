@@ -169,3 +169,43 @@ def selftest():
     sc = Scene()  # look 1 = base × out, con logo
     assert compose(snap(out=0.5), sc, cfg) == ((128, 128, 128), (128, 128, 128), True)
     print("ok: compose Q/E/7/U/Z, bump y blackout")
+
+    # --- F5: regla unirse_a_looks por salida y retardo extra por salida
+    from .config import _fit
+    from .outputs import compose_output, default_output, resolve
+    out = lambda sc, rule, master=1.0, logo=True, o=0.7: compose_output(snap(out=o), sc, cfg, rule, master, logo)
+    sc = Scene()
+    sc.select("2", snap(0))
+    f = out(sc, "excepto en 1")                          # 1: look 2 -> se une: rojo, sin logo
+    assert f.left == f.right == (178, 0, 0) and not f.logo_visible, f
+    sc.select("1", snap(0))
+    f = out(sc, "excepto en 1", master=0.3, o=0.5)       # look 1 -> luz base × out × master, con logo
+    assert f == ((38, 38, 38), (38, 38, 38), True), f
+    assert out(sc, "siempre") == ((178,) * 3, (178,) * 3, False)  # unida en el look 1: sin logo
+    assert not out(sc, "excepto en 1", logo=False).logo_visible   # contenido "Luz": nunca logo
+    sc.select("Q", snap(0))
+    assert out(sc, "nunca", o=0.5) == ((128,) * 3, (128,) * 3, True)  # nunca: base del look 1
+    sc.bump = True
+    assert out(sc, "nunca", master=0.3) == (WHITE, WHITE, False)  # bump: a todas, sin logo
+    sc.blackout = True
+    assert all(out(sc, r) == (BLACK, BLACK, False) for r in ("siempre", "excepto en 1", "nunca"))
+    e = Engine(sr)  # 2: sample(0.05) = 5 bloques atrás; con offset se suman
+    e.offset = 0.1
+    s0, s5 = [], []
+    for i in range(0, len(sig) // 3 - BLOCK + 1, BLOCK):
+        e.process(sig[i:i + BLOCK])
+        s0.append(e.sample())
+        s5.append(e.sample(0.05))
+    assert all(a[:3] == b[:3] and abs(a.t - b.t) < 1e-6 for a, b in zip(s5[5:], s0[:-5])), "sample(0.05)"
+    assert e.sample(0.05).t == e.t - 15 * e.dt
+    assert e.hist.maxlen - 1 >= round((0.3 + 0.2) / e.dt), e.hist.maxlen  # offset 300 + retardo 200 ms
+    from .win32 import Monitor
+    mons = [Monitor("\\\\.\\DISPLAY1", 0, 0, 1920, 1080, True), Monitor("\\\\.\\DISPLAY2", 1920, 0, 1280, 720, False)]
+    assert resolve("\\\\.\\DISPLAY2", "", mons) == (mons[1], None)
+    m, warn = resolve("\\\\.\\DISPLAY9", "800x600+5000+0", mons)  # desconectado -> primario, con aviso
+    assert m == mons[0] and warn, (m, warn)
+    d = default_output(1, mons)  # config: lista de salidas; los campos inválidos caen al default
+    fit = _fit([{"nombre": "TV", "master": 30, "logo": 5}, "x"], [d])
+    assert len(fit) == 1 and fit[0]["nombre"] == "TV" and fit[0]["master"] == 30.0 and fit[0]["logo"] == "", fit
+    print("ok: unirse_a_looks (excepto en 1 / siempre / nunca), bump y blackout en todas · sample(0.05) "
+          "= 5 bloques · monitor ausente -> primario")

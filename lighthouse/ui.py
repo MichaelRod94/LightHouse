@@ -1,15 +1,16 @@
-"""GUI: ventana Control + ventana Luz, looks por teclado, presets, watchdog de silencio, reconexión y config."""
+"""GUI: ventana Control (pestañas Show / Audio / Salidas) + salidas de video, looks por teclado, presets,
+watchdog de silencio, reconexión, calibración de retardo y config."""
 import logging
-import re
 import threading
 import time
 
 import numpy as np
 
-from . import config, scene, win32
+from . import config, outputs, scene, win32
 from .audio import Audio
 from .engine import BLOCK, Engine
-from .scene import LOOKS, Cfg, Scene, compose
+from .outputs import JOIN, LOGO, CONTENT, MAX_OUTPUTS, Output, compose_output
+from .scene import LOOKS, Cfg, Scene
 
 log = logging.getLogger(__name__)
 
@@ -39,8 +40,11 @@ KELVIN = np.array([[2000, 255, 137, 18], [3000, 255, 180, 107], [4000, 255, 209,
 PALETTE = ["#ff2a55", "#ff9f1c", "#2ec4ff", "#9b5cff"]
 MODES = ("auto", "pulso", "tranquilo", "manual")
 COLOR_MODES = ["Blanco", "Temperatura", "Paleta (cambia en cada flash)"]
-LIGHT_GEO = "640x400+60+60"
-GEO_RE = re.compile(r"^\d+x\d+[+-]-?\d+[+-]-?\d+$")
+CALIB_TEXT = ("Pon un track con kick claro. Graba con el celular en cámara lenta (240 fps) bocina + pantallas. "
+              "Cuenta cuadros entre el golpe audible y el destello: 1 cuadro ≈ 4 ms. "
+              "Ajusta el offset global y el retardo de cada salida hasta alinear.")
+CALIB_WHERE = ("Offset global: pestaña Show → Luz. Retardo de cada salida: pestaña Salidas. "
+               "Mientras calibras: look 1 en blanco, piso 0, decay 50 ms y modo Pulso.")
 MIC_HINT = ("Revisa Configuración → Privacidad → Micrófono → "
             "Permitir que las aplicaciones de escritorio accedan")
 RETRY_S, NO_SIGNAL_S, CLIP_S = 3.0, 3.0, 0.5
@@ -66,7 +70,9 @@ class App:
         self.last_audio = self.last_feed = time.perf_counter()
         self.zeros = np.zeros(BLOCK)
         self.scene, self.cfg = Scene(), Cfg()  # el look activo no se persiste: siempre arranca en 1
-        self.painted = [None, None]            # último RGB pintado en cada mitad de la ventana Luz
+        self.outputs = []                      # Output (la Salida 1 hereda la ventana Luz de F1–F4)
+        self.mons = win32.monitors()
+        self.calib = None                      # valores a restaurar al salir de Calibrar retardo
         self.keys = {a: list(v) for a, v in KEYS.items()}
         self.look_hex = {k: list(v[2]) for k, v in LOOKS.items() if v[2]}
         self.vk_actions, self.bump_vks, self.held = {}, (), None
@@ -75,7 +81,7 @@ class App:
         self.scales = {}  # llave -> tk.Scale
         self.checks = {}  # atributo del motor -> BooleanVar
         self.palette = list(PALETTE)
-        self.geo = {"geo_control": "", "geo_light": LIGHT_GEO}  # última geometría válida vista
+        self.geo = {"geo_control": ""}  # última geometría válida vista
         self.chan_idx = 0           # 0 = Mezcla, n = Canal n
         self.want = None            # dispositivo que debe estar abierto (para reintentar)
         self.retry_t = 0.0
@@ -86,30 +92,49 @@ class App:
         root.title("LightHouse · Control")
         root.protocol("WM_DELETE_WINDOW", self.quit)
         root.report_callback_exception = lambda *a: report(*a, where="callback de Tk")
-        self.light = tk.Toplevel(root, bg="black")
-        self.light.title("LightHouse · Luz")
-        self.light.geometry(LIGHT_GEO)
-        self.light.protocol("WM_DELETE_WINDOW", self.light.iconify)
-        # dos mitades = dos Frame con bg (no Canvas: a pantalla completa el Canvas cuesta ~7 ms por pintado
-        # contra ~0,3 ms del bg). Se solapan 1 px para que un look sólido no muestre costura
-        self.halves = [tk.Frame(self.light, bg="#000000", bd=0, highlightthickness=0) for _ in range(2)]
-        self.halves[0].place(x=0, y=0, relwidth=0.5, width=1, relheight=1)
-        self.halves[1].place(relx=0.5, y=0, relwidth=0.5, width=1, relheight=1)
-        self.light.bind("<F11>", lambda e: self.fullscreen(None))
-        self.light.bind("<Double-Button-1>", lambda e: self.fullscreen(None))
-        self.light.bind("<Escape>", lambda e: self.fullscreen(False))
+        win32.keep_awake(True)  # pantalla sin dormirse; quit() y __main__ (finally) lo liberan
 
-        cols = [ttk.Frame(root, padding=6) for _ in range(3)]
-        for i, c in enumerate(cols):
-            c.grid(row=1, column=i, sticky="n")  # fila 0: barra de looks
+        # fila 0: barra de looks · fila 1: indicadores (siempre visibles) + pestañas · fila 2: ayuda.
+        # Pestañas para que la ventana quepa en 1366×768 al 100 % y en 1920×1080 al 150 % (DPI aware)
+        left = ttk.Frame(root, padding=6)
+        left.grid(row=1, column=0, sticky="n")
+        self.nb = ttk.Notebook(root, takefocus=0)
+        self.nb.grid(row=1, column=1, sticky="n", padx=(0, 6), pady=(8, 6))
+        tab = {}
+        for name in ("Show", "Audio", "Salidas"):
+            t = ttk.Frame(self.nb, padding=4)
+            self.nb.add(t, text=f"  {name}  ")
+            tab[name] = [ttk.Frame(t, padding=(4, 0)) for _ in range(2)]
+            for i, c in enumerate(tab[name]):
+                c.grid(row=0, column=i, sticky="n")
+        show, aud, outs = tab["Show"], tab["Audio"], tab["Salidas"]
 
-        def box(title, col):
-            fr = ttk.LabelFrame(cols[col], text=title, padding=6)
+        def box(title, parent):
+            fr = ttk.LabelFrame(parent, text=title, padding=6)
             fr.pack(fill="x", pady=3)
             return fr
 
-        # --- columna 0: entrada y detección
-        fr = box("Fuente de audio", 0)
+        # --- siempre visibles: lecturas, fuente de audio (estado, SIN SEÑAL, SATURA), modo y blackout
+        fr = box("Lecturas", left)
+        self.meter = tk.Canvas(fr, width=320, height=56, bg="#111", highlightthickness=0)
+        self.meter.pack()
+        self.bar_l = self.meter.create_rectangle(0, 4, 0, 24, fill="#666", width=0)
+        self.bar_o = self.meter.create_rectangle(0, 32, 0, 52, fill="#eee", width=0)
+        self.line = self.meter.create_line(0, 28, 0, 56, fill="#e33", width=2)
+        ttk.Label(fr, text="gris: nivel de banda · blanco: subida (golpe) · rojo: umbral",
+                  foreground="#666").pack()
+        row = ttk.Frame(fr); row.pack(fill="x")
+        self.dot = tk.Canvas(row, width=26, height=26, highlightthickness=0)
+        self.dot.pack(side="left")
+        self.dot_id = self.dot.create_oval(3, 3, 23, 23, fill="#333", width=0)
+        self.bpm = ttk.Label(row, text="-- BPM", font=("Segoe UI", 18, "bold"))
+        self.bpm.pack(side="left", padx=8)
+        self.state = ttk.Label(row, text="", font=("Segoe UI", 11, "bold"))
+        self.state.pack(side="right")
+        self.look_lbl = ttk.Label(fr, text="", font=("Segoe UI", 18, "bold"))
+        self.look_lbl.pack(anchor="w")
+
+        fr = box("Fuente de audio", left)
         self.dev = ttk.Combobox(fr, state="readonly", width=44, takefocus=0)
         self.dev.pack(fill="x")
         self.dev.bind("<<ComboboxSelected>>", lambda e: self.pick_device())
@@ -132,7 +157,7 @@ class App:
         ttk.Checkbutton(fr, text="Prioridad baja (laptop DJ)", variable=self.low_prio,
                         takefocus=0).pack(anchor="w", pady=(4, 0))
 
-        fr = box("Ganancia", 0)
+        fr = box("Ganancia", aud[0])
         self.agc = tk.BooleanVar(value=self.eng.agc)
         self.checks["agc"] = self.agc
         row = ttk.Frame(fr); row.pack(fill="x")
@@ -144,7 +169,7 @@ class App:
         self.agc.trace_add("write", lambda *_: self.set_agc())
         self.set_agc()
 
-        fr = box("Modo", 0)
+        fr = box("Modo", left)
         self.mode = tk.StringVar(value=self.eng.mode)
         self.mode.trace_add("write", lambda *_: setattr(self.eng, "mode", self.mode.get()))
         for i, m in enumerate(MODES, 1):
@@ -155,47 +180,27 @@ class App:
                        takefocus=0, padx=8, command=lambda: setattr(self.scene, "blackout", self.bo.get())
                        ).pack(side="right")
 
-        fr = box("Teclado", 0)
+        fr = box("Teclado", show[0])
         self.global_keys = tk.BooleanVar(value=False)
         ttk.Checkbutton(fr, text="Teclas globales", variable=self.global_keys, takefocus=0).pack(anchor="w")
         self.keys_note = ttk.Label(fr, text=LOCAL_NOTE, foreground="#666", wraplength=330)
         self.keys_note.pack(anchor="w")
         self.global_keys.trace_add("write", lambda *_: self.set_global_keys())
 
-        fr = box("Filtro (qué escucha el detector de golpe)", 0)
+        fr = box("Filtro (qué escucha el detector de golpe)", aud[0])
         self.preset = ttk.Combobox(fr, state="readonly", values=list(FILTERS), takefocus=0)
         self.preset.set("Kick (120 Hz)")
         self.preset.pack(fill="x")
         self.preset.bind("<<ComboboxSelected>>", lambda e: self.pick_filter())
         self.band = self.slider(fr, "Corte (Hz)", "band", 40, 250, fn=self.band_from_slider)
 
-        fr = box("Golpe", 0)
+        fr = box("Golpe", aud[0])
         self.slider(fr, "Sensibilidad (×)", "sens", 1.0, 3.0, res=0.1)
         self.slider(fr, "Refractario (ms)", "min_gap", 120, 500, k=0.001)
         self.slider(fr, "Compuerta (dB)", "gate_db", -60, -30)
         self.check(fr, "Intensidad por golpe", "by_strength")
 
-        # --- columna 1: lecturas, tempo, luz
-        fr = box("Lecturas", 1)
-        self.meter = tk.Canvas(fr, width=320, height=56, bg="#111", highlightthickness=0)
-        self.meter.pack()
-        self.bar_l = self.meter.create_rectangle(0, 4, 0, 24, fill="#666", width=0)
-        self.bar_o = self.meter.create_rectangle(0, 32, 0, 52, fill="#eee", width=0)
-        self.line = self.meter.create_line(0, 28, 0, 56, fill="#e33", width=2)
-        ttk.Label(fr, text="gris: nivel de banda · blanco: subida (golpe) · rojo: umbral",
-                  foreground="#666").pack()
-        row = ttk.Frame(fr); row.pack(fill="x")
-        self.dot = tk.Canvas(row, width=26, height=26, highlightthickness=0)
-        self.dot.pack(side="left")
-        self.dot_id = self.dot.create_oval(3, 3, 23, 23, fill="#333", width=0)
-        self.bpm = ttk.Label(row, text="-- BPM", font=("Segoe UI", 18, "bold"))
-        self.bpm.pack(side="left", padx=8)
-        self.state = ttk.Label(row, text="", font=("Segoe UI", 11, "bold"))
-        self.state.pack(side="right")
-        self.look_lbl = ttk.Label(fr, text="", font=("Segoe UI", 18, "bold"))
-        self.look_lbl.pack(anchor="w")
-
-        fr = box("Tempo", 1)
+        fr = box("Tempo", aud[1])
         row = ttk.Frame(fr); row.pack(fill="x")
         self.sync = tk.StringVar(value=self.eng.sync)
         self.sync.trace_add("write", lambda *_: setattr(self.eng, "sync", self.sync.get()))
@@ -219,7 +224,7 @@ class App:
         div.pack(side="left")
         div.bind("<<ComboboxSelected>>", lambda e: setattr(self.eng, "divisor", int(div.get()[2:])))
 
-        fr = box("Luz", 1)
+        fr = box("Luz", show[0])
         self.slider(fr, "Decay (ms)", "decay", 50, 1000, k=0.001)
         self.slider(fr, "Master (%)", "vmax", 0, 100, k=0.01)
         self.slider(fr, "Piso pulso (%)", "vmin", 0, 50, k=0.01)
@@ -230,25 +235,24 @@ class App:
         self.lead = ttk.Label(fr, text="", foreground="#666")
         self.lead.pack(anchor="w")
 
-        # --- columna 2: respuesta, estrobos, tranquilo y color
-        fr = box("Respuesta", 2)
+        fr = box("Respuesta", show[1])
         self.resp = self.presets(fr, RESPONSE)
         self.check(fr, "Limitar destellos", "flash_limit")
         self.slider(fr, "Máx. destellos/s", "flash_limit_hz", 3, 10)
         ttk.Label(fr, text=PHOTO_WARN, foreground="#c60", wraplength=330).pack(anchor="w")
 
-        fr = box("Estrobos (Q–Y)", 2)
+        fr = box("Estrobos (Q–Y)", show[1])
         self.slider(fr, "Cierre del golpe", "cierre", 0.2, 0.9, res=0.05)
         self.slider(fr, "Mínimo (ms)", "strobe_min_ms", 20, 120)
 
-        fr = box("Tranquilo", 2)
+        fr = box("Tranquilo", aud[1])
         self.presets(fr, CALM)
         self.slider(fr, "Entrar tras (s)", "calm_after", 2, 15)
         self.slider(fr, "Suavizado (s)", "calm_smooth", 1, 3, res=0.1)
         self.slider(fr, "Nivel base (%)", "calm_base", 0, 60, k=0.01)
         self.slider(fr, "Profundidad (%)", "calm_depth", 0, 60, k=0.01)
 
-        fr = box("Color (opcional)", 2)
+        fr = box("Color (opcional)", show[1])
         self.color_mode = ttk.Combobox(fr, state="readonly", takefocus=0, values=COLOR_MODES)
         self.color_mode.set("Blanco")
         self.color_mode.pack(fill="x")
@@ -261,9 +265,66 @@ class App:
         ttk.Button(row, text="−", width=3, command=self.pop_color, takefocus=0).pack(side="left")
         self.draw_palette()
 
+        # --- pestaña Salidas: lista + campos de la seleccionada (se editan en vivo)
+        fr = box("Salidas", outs[0])
+        self.out_list = tk.Listbox(fr, height=MAX_OUTPUTS, width=36, exportselection=False, activestyle="none",
+                                   takefocus=0)
+        self.out_list.pack(fill="x")
+        self.out_list.bind("<<ListboxSelect>>", lambda e: self.show_output())
+        row = ttk.Frame(fr); row.pack(fill="x", pady=(4, 0))
+        self.out_add = ttk.Button(row, text="Agregar", command=self.add_output, takefocus=0)
+        self.out_add.pack(side="left")
+        self.out_del = ttk.Button(row, text="Quitar", command=self.del_output, takefocus=0)
+        self.out_del.pack(side="left", padx=6)
+        row = ttk.Frame(fr); row.pack(fill="x", pady=(4, 0))
+        ttk.Button(row, text="Identificar", command=self.identify, takefocus=0).pack(side="left")
+        ttk.Button(row, text="Calibrar retardo", command=self.calibrate, takefocus=0).pack(side="left", padx=6)
+        ttk.Label(fr, foreground="#666", wraplength=300, text=(
+            "En la salida: doble clic = pantalla completa (en el monitor donde está) / ventana; Esc = ventana. "
+            "Fuera del look 1 (o en \"siempre\") la salida se une al look y oculta el logo.")).pack(anchor="w",
+                                                                                                 pady=(6, 0))
+
+        fr = box("Salida seleccionada", outs[1])
+        self.loading = False  # True mientras show_output() carga los campos: no escribir de vuelta
+
+        def field(label):
+            r = ttk.Frame(fr); r.pack(fill="x", pady=2)
+            ttk.Label(r, text=label, width=15).pack(side="left")
+            return r
+
+        self.typing = False  # foco en un campo de texto: las teclas (GetAsyncKeyState) no disparan looks
+        self.o_name = tk.StringVar()
+        ent = ttk.Entry(field("Nombre"), textvariable=self.o_name, width=26)
+        ent.pack(side="left", fill="x", expand=True)
+        self.text_entry(ent)
+        self.o_name.trace_add("write", lambda *_: self.edit_output("name", self.o_name.get()))
+        self.o_mon = ttk.Combobox(field("Monitor"), state="readonly", width=30, takefocus=0,
+                                  postcommand=self.list_monitors)
+        self.o_mon.pack(side="left", fill="x", expand=True)
+        self.o_mon.bind("<<ComboboxSelected>>", lambda e: self.pick_monitor())
+        self.o_full = ttk.Button(field(""), text="Pantalla completa", takefocus=0,
+                                 command=lambda: self.sel().set_full(not self.sel().full))
+        self.o_full.pack(side="left", fill="x", expand=True)
+        self.o_master = self.out_slider(fr, "Master (%)", "master", 0, 100)
+        self.o_delay = self.out_slider(fr, "Retardo extra (ms)", "delay_ms", 0, 200)
+        self.o_content = ttk.Combobox(field("Contenido"), state="readonly", values=CONTENT, width=12, takefocus=0)
+        self.o_content.pack(side="left")
+        self.o_content.bind("<<ComboboxSelected>>", lambda e: self.edit_output("content", self.o_content.get()))
+        r = field("Logo (PNG)")
+        self.o_logo = tk.StringVar()
+        ent = ttk.Entry(r, textvariable=self.o_logo, width=22)
+        ent.pack(side="left", fill="x", expand=True)
+        self.text_entry(ent, lambda: self.set_logo(self.o_logo.get()))
+        ttk.Button(r, text="…", width=3, command=self.browse_logo, takefocus=0).pack(side="left", padx=(4, 0))
+        self.o_join = ttk.Combobox(field("Unirse a looks"), state="readonly", values=JOIN, width=12, takefocus=0)
+        self.o_join.pack(side="left")
+        self.o_join.bind("<<ComboboxSelected>>", lambda e: self.edit_output("join", self.o_join.get()))
+        self.out_warn = ttk.Label(left, text="", foreground="#c60", wraplength=330)  # monitor ausente, logo
+        self.out_warn.pack(anchor="w", padx=4)
+
         # --- looks (latch): también con el mouse; las teclas se leen en fast() (poll_keys)
         bar = ttk.Frame(root, padding=(12, 8, 12, 0))
-        bar.grid(row=0, column=0, columnspan=3, sticky="ew")
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew")
         self.look_var = tk.StringVar(value=self.scene.look)
         self.look_btns, self.look_sw = {}, {}
         for i, lid in enumerate(LOOKS):
@@ -277,13 +338,14 @@ class App:
 
         ttk.Label(root, foreground="#666", padding=(8, 0, 8, 6), font=("Segoe UI", 8), text=(
             "1–7 · Q W E R T Y U · Z: looks (quedan hasta elegir otro) · Espacio: blackout · F (mantener): bump · "
-            "F1–F4: modos · 0: tap · + / −: sensibilidad · Luz: F11 / doble clic = pantalla completa, Esc sale")
-                  ).grid(row=2, column=0, columnspan=3)
+            "F1–F4: modos · 0: tap · + / −: sensibilidad · Salidas: doble clic = pantalla completa, Esc = ventana")
+                  ).grid(row=2, column=0, columnspan=2)
 
         # config: los defaults son los valores iniciales de arriba (Engine + UI); lo guardado válido los pisa
         defaults = self.snapshot()
+        defaults["outputs"] = [outputs.default_output(1, self.mons)]  # plantilla de cada salida guardada
         cfg = config.load(defaults)
-        self.apply(cfg)  # aplica también la prioridad (trace de low_prio)
+        self.apply(cfg)  # aplica también la prioridad (trace de low_prio) y crea las salidas
         self.snap = self.saved = self.snapshot()
         self.dirty_t = None
         self.fast_cmd = root.register(self.fast)
@@ -402,8 +464,8 @@ class App:
     def poll_keys(self):
         """Teclas por GetAsyncKeyState: llegan aunque el foco de Tk esté en otra ventana de la app.
         Acción al presionar (flanco); el bump, mientras está presionada. Sin "Teclas globales",
-        solo con un proceso LightHouse al frente."""
-        if not (self.keys_global or win32.app_in_foreground()):
+        solo con un proceso LightHouse al frente; nunca mientras se escribe en un campo de texto."""
+        if self.typing or not (self.keys_global or win32.app_in_foreground()):
             self.held, self.scene.bump = None, False
             return
         down = {vk for vk in self.vk_actions if win32.key_down(vk)}
@@ -456,9 +518,173 @@ class App:
         for i, c in enumerate(self.palette):
             self.swatch.create_rectangle(i * w, 0, (i + 1) * w, 22, fill=c, width=0)
 
-    def fullscreen(self, on):
-        on = not self.light.attributes("-fullscreen") if on is None else on
-        self.light.attributes("-fullscreen", on)
+    # --- salidas
+    def out_slider(self, fr, label, attr, lo, hi):
+        """Slider de la salida seleccionada (no va a self.vars: se guarda dentro de "outputs")."""
+        var = self.tk.DoubleVar(value=lo)
+        row = self.ttk.Frame(fr); row.pack(fill="x")
+        self.ttk.Label(row, text=label, width=15).pack(side="left", anchor="s", pady=(0, 4))
+        self.tk.Scale(row, from_=lo, to=hi, orient="horizontal", variable=var, length=200, takefocus=0,
+                      command=lambda v: self.edit_output(attr, float(v))).pack(side="left", fill="x", expand=True)
+        return var
+
+    def text_entry(self, ent, done=None):
+        """Campo de texto: mientras tiene el foco las teclas no disparan looks; Enter o salir lo aplica."""
+        def leave(_=None):
+            self.typing = False
+            if done:
+                done()
+        ent.bind("<FocusIn>", lambda e: setattr(self, "typing", True))
+        ent.bind("<FocusOut>", leave)
+        ent.bind("<Return>", lambda e: self.root.focus_set())  # suelta el foco -> FocusOut
+
+    def sel(self):
+        s = self.out_list.curselection()
+        return self.outputs[min(s[0] if s else 0, len(self.outputs) - 1)]
+
+    @staticmethod
+    def out_label(n, o):
+        return f"{n} · {o.name} · " + (f"pantalla completa · {o.mon.device}" if o.full else "ventana")
+
+    def set_outputs(self, ds):
+        """Crea las salidas desde la config (1..4); cada campo inválido cae a su default."""
+        for o in self.outputs:
+            o.destroy()
+        self.mons = win32.monitors()
+        self.outputs = [Output(self, d, self.mons) for d in ds[:MAX_OUTPUTS]]
+        self.outputs_changed(0)
+
+    def outputs_changed(self, select=None):
+        """Refresca la lista y los campos (tras agregar, quitar o cambiar de modo desde la salida)."""
+        i = self.outputs.index(self.sel()) if select is None and self.out_list.size() else select or 0
+        self.out_list.delete(0, "end")
+        for n, o in enumerate(self.outputs, 1):
+            self.out_list.insert("end", self.out_label(n, o))
+        self.out_list.selection_set(i)
+        self.out_add.config(state="normal" if len(self.outputs) < MAX_OUTPUTS else "disabled")
+        self.out_del.config(state="normal" if len(self.outputs) > 1 else "disabled")
+        self.show_output()
+
+    def mon_label(self, m):
+        return f"{m.device} · {m.w}×{m.h}" + (" · principal" if m.primary else "")
+
+    def list_monitors(self):
+        self.mons = win32.monitors()
+        self.o_mon["values"] = [self.mon_label(m) for m in self.mons]
+
+    def show_output(self):
+        """Carga en los campos la salida seleccionada."""
+        o, self.loading = self.sel(), True
+        try:
+            self.o_name.set(o.name)
+            self.list_monitors()
+            self.o_mon.set(self.mon_label(o.mon))
+            self.o_full.config(text="Ventana" if o.full else "Pantalla completa")
+            self.o_master.set(o.master)
+            self.o_delay.set(o.delay_ms)
+            self.o_content.set(o.content)
+            self.o_logo.set(o.logo)
+            self.o_join.set(o.join)
+        finally:
+            self.loading = False
+
+    def edit_output(self, attr, v):
+        if self.loading:
+            return
+        o = self.sel()
+        setattr(o, attr, v)
+        if attr == "name":
+            o.win.title(f"LightHouse · {v}")
+            i = self.outputs.index(o)
+            self.out_list.delete(i)
+            self.out_list.insert(i, self.out_label(i + 1, o))
+            self.out_list.selection_set(i)
+
+    def pick_monitor(self):
+        i = self.o_mon.current()
+        if 0 <= i < len(self.mons):
+            self.sel().set_monitor(self.mons[i])
+            self.outputs_changed()
+
+    def set_logo(self, path):
+        o = self.sel()
+        if path.strip() != o.logo:
+            o.set_logo(path)
+
+    def browse_logo(self):
+        from tkinter import filedialog
+        self.typing = True  # el diálogo nativo también es "LightHouse al frente": no disparar looks al escribir
+        try:
+            p = filedialog.askopenfilename(parent=self.root, title="Logo (PNG)",
+                                           filetypes=[("PNG", "*.png"), ("Todos", "*.*")])
+        finally:
+            self.typing = False
+        if p:
+            self.o_logo.set(p)
+            self.set_logo(p)
+
+    def add_output(self):
+        if len(self.outputs) < MAX_OUTPUTS:
+            self.mons = win32.monitors()
+            used = {o.device for o in self.outputs}
+            self.outputs.append(Output(self, outputs.default_output(len(self.outputs) + 1, self.mons, used),
+                                       self.mons))
+            self.outputs_changed(len(self.outputs) - 1)
+
+    def del_output(self):
+        if len(self.outputs) > 1:
+            o = self.sel()
+            i = self.outputs.index(o)
+            self.outputs.remove(o)
+            o.destroy()
+            self.outputs_changed(max(i - 1, 0))
+
+    def identify(self):
+        """Durante 3 s cada salida muestra en grande su número, monitor y resolución."""
+        self.mons = win32.monitors()
+        for n, o in enumerate(self.outputs, 1):
+            o.identify(n, self.mons)
+
+    def set_var(self, key, v):
+        var, k, fn = self.vars[key][:3]
+        var.set(v)
+        fn(v * k)
+
+    def calibrate(self):
+        """Blanco, piso 0, decay 50 ms y modo Pulso mientras se calibra; Salir restaura lo anterior."""
+        if self.calib:
+            self.calib["win"].lift()
+            return
+        tk, ttk = self.tk, self.ttk
+        self.calib = dict(look=self.scene.look, color_mode=self.color_mode.get(), mode=self.mode.get(),
+                          vmin=self.vars["vmin"][0].get(), decay=self.vars["decay"][0].get())
+        self.select_look("1")
+        self.color_mode.set("Blanco")
+        self.set_var("vmin", 0)
+        self.set_var("decay", 50)
+        self.mode.set("pulso")
+        w = self.calib["win"] = tk.Toplevel(self.root)
+        w.title("LightHouse · Calibrar retardo")
+        w.protocol("WM_DELETE_WINDOW", self.calib_exit)
+        fr = ttk.Frame(w, padding=12)
+        fr.pack(fill="both", expand=True)
+        ttk.Label(fr, text=CALIB_TEXT, wraplength=440, font=("Segoe UI", 11)).pack(anchor="w")
+        ttk.Label(fr, text=CALIB_WHERE, wraplength=440, foreground="#666").pack(anchor="w", pady=(8, 0))
+        ttk.Button(fr, text="Salir", command=self.calib_exit, takefocus=0).pack(anchor="e", pady=(10, 0))
+        log.info("calibración de retardo: inicio")
+
+    def calib_exit(self):
+        c, self.calib = self.calib, None
+        if not c:
+            return
+        self.select_look(c["look"])
+        self.color_mode.set(c["color_mode"])
+        self.set_var("vmin", c["vmin"])
+        self.set_var("decay", c["decay"])
+        self.mode.set(c["mode"])
+        c["win"].destroy()
+        log.info("calibración de retardo: fin (offset %.0f ms; retardos %s)", self.eng.offset * 1000,
+                 [o.delay_ms for o in self.outputs])
 
     # --- config
     def snapshot(self):
@@ -470,10 +696,10 @@ class App:
                  palette=list(self.palette), device=self.dev.get(), channel=self.chan_idx,
                  low_priority=self.low_prio.get(), response=self.resp.get(),
                  global_keys=self.global_keys.get(), keys={a: list(v) for a, v in self.keys.items()},
-                 look_colors={k: list(v) for k, v in self.look_hex.items()})
-        for key, w in (("geo_control", self.root), ("geo_light", self.light)):
-            if w.winfo_viewable() and not (w is self.light and w.attributes("-fullscreen")):
-                self.geo[key] = w.geometry()
+                 look_colors={k: list(v) for k, v in self.look_hex.items()},
+                 outputs=[o.snapshot() for o in self.outputs])
+        if self.root.winfo_viewable():
+            self.geo["geo_control"] = self.root.geometry()
         s.update(self.geo)
         return s
 
@@ -522,12 +748,14 @@ class App:
             self.draw_palette()
         except self.tk.TclError:
             log.warning("config: paleta inválida %r; se usa el default", c["palette"])
-        for key, w in (("geo_control", self.root), ("geo_light", self.light)):
-            if GEO_RE.match(c[key]):  # ponytail: no valida que caiga en un monitor existente; F5 lo revisa
-                w.geometry(c[key])
-                self.geo[key] = c[key]
-            elif c[key]:
-                log.warning("config: %r=%r no es válido", key, c[key])
+        g = outputs.GEO_RE.match(c["geo_control"])
+        if g and outputs.geo_ok(c["geo_control"], self.mons):
+            # solo la posición: el tamaño lo pide el contenido (cambió con las pestañas y con DPI aware)
+            self.root.geometry(g[3] + g[4])
+            self.geo["geo_control"] = c["geo_control"]
+        elif c["geo_control"]:
+            log.warning("config: geo_control=%r no es válido o cae fuera de los monitores", c["geo_control"])
+        self.set_outputs(c["outputs"])
 
     def save(self):
         try:
@@ -537,6 +765,9 @@ class App:
 
     def autosave(self):
         # ponytail: debounce por sondeo a 2 Hz (compara snapshots); si hiciera falta, engancharlo a cada widget
+        if self.calib:  # los valores de calibración son temporales: no se guardan
+            self.root.after(500, self.autosave)
+            return
         now = time.perf_counter()
         s = self.snapshot()
         if s != self.snap:
@@ -634,14 +865,13 @@ class App:
         return [(255, 255, 255)]
 
     def fast(self):
-        """Render rápido (por bloque de audio, vía waker; y en cada tick lento): sondea las teclas,
-        compone el Frame y pinta solo la mitad que cambió."""
+        """Render rápido (por bloque de audio, vía waker; y en cada tick lento): sondea las teclas y,
+        por salida, compone su Frame (su retardo, su master, su regla de unirse) y pinta lo que cambió."""
         self.poll_keys()
-        f = compose(self.eng.sample(), self.scene, self.cfg)
-        for i, rgb in enumerate((f.left, f.right)):
-            if rgb != self.painted[i]:
-                self.painted[i] = rgb
-                self.halves[i].configure(bg="#%02x%02x%02x" % rgb)
+        e, sc, cfg, now = self.eng, self.scene, self.cfg, time.perf_counter()
+        for o in self.outputs:
+            o.render(compose_output(e.sample(o.delay_ms * 0.001), sc, cfg, o.join, o.master * 0.01,
+                                    o.content == LOGO), now)
 
     def slow(self):
         """Loop lento (~30 Hz): watchdog de silencio, reconexión, medidores, labels e indicadores."""
@@ -681,7 +911,8 @@ class App:
             put(self.bpm.config, text=f"{e.bpm_manual:.0f} BPM (manual)")
         else:
             put(self.bpm.config, text=f"{e.bpm:.0f} BPM" if e.bpm and e.t - e.last_beat < 2 else "-- BPM")
-        put(self.state.config, text="BLACKOUT" if sc.blackout else "BUMP" if sc.bump else
+        put(self.state.config, text="TECLAS EN PAUSA" if self.typing else
+            "BLACKOUT" if sc.blackout else "BUMP" if sc.bump else
             e.mode.upper() if e.mode != "auto" else "AUTO · TRANQUILO" if e.calm else "AUTO · PULSO")
         put(self.look_lbl.config, text=f"Look {self.keys[sc.look][0]} · {LOOKS[sc.look][0]}")
         put(self.lead.config, text="" if e.offset >= 0 else "anticipación activa" if e.lead() else
@@ -689,6 +920,8 @@ class App:
             "anticipación inactiva (esperando BPM fiable)")
         put(self.no_sig.config, text="SIN SEÑAL" if alive and e.t - e.last_sound > NO_SIGNAL_S else "")
         put(self.clip.config, text="SATURA" if now - self.audio.clip_t < CLIP_S else "")
+        put(self.out_warn.config, text="\n".join(
+            w for o in self.outputs for w in (f"{o.name}: {o.warn}" if o.warn else "", o.logo_err) if w))
 
     def put(self, fn, *args, **kw):
         """fn(*args, **kw) solo si cambió desde la última vez: cada config/coords hace redibujar a Tk."""
@@ -698,8 +931,10 @@ class App:
             fn(*args, **kw)
 
     def quit(self):
+        self.calib_exit()  # se guardan los valores de antes de calibrar
         self.save()
         self.running = False
         self.audio.terminate()
         self.wake.set()
+        win32.keep_awake(False)
         self.root.destroy()

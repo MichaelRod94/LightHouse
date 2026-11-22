@@ -4,7 +4,7 @@ import logging
 import os
 
 log = logging.getLogger(__name__)
-VERSION = 3
+VERSION = 4
 
 
 def _migrate(raw):
@@ -16,6 +16,9 @@ def _migrate(raw):
         if isinstance(raw.get("device"), str) and raw["device"]:
             raw["device"] = "Salida (loopback) · " + raw["device"]  # = audio.LOOP; F1 solo tenía loopback
     # v2 -> v3 (F4): solo llaves nuevas (teclas, colores de looks, estrobos, limitador); las ponen los defaults
+    if v < 4 and "outputs" not in raw:  # F5: la ventana Luz pasa a ser la Salida 1, en ventana, con su geometría
+        geo = raw.pop("geo_light", "")
+        raw["outputs"] = [{"geo": geo if isinstance(geo, str) else ""}]  # el resto de campos: defaults
     if v < VERSION:
         log.info("config migrada de v%s a v%d", v, VERSION)
 
@@ -25,8 +28,9 @@ def path():
 
 
 def _fit(v, d):
-    """v con el tipo de d (bool/int/float/str/list de str/dict de esos), o None si no encaja.
-    dict: solo las llaves de d; cada una que no encaje conserva su default."""
+    """v con el tipo de d (bool/int/float/str/list de str/dict de esos/list de dict), o None si no encaja.
+    dict: solo las llaves de d; cada una que no encaje conserva su default.
+    list de dict (salidas): cada elemento contra el primero de d; los que no son dict se descartan."""
     if isinstance(d, dict):
         if not isinstance(v, dict):
             return None
@@ -38,6 +42,9 @@ def _fit(v, d):
         return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
     if isinstance(d, str):
         return v if isinstance(v, str) else None
+    if isinstance(d, list) and d and isinstance(d[0], dict):
+        items = [_fit(i, d[0]) for i in v] if isinstance(v, list) else []
+        return [i for i in items if i is not None] or None
     if isinstance(d, list):
         return v if isinstance(v, list) and v and all(isinstance(i, str) for i in v) else None
     return None

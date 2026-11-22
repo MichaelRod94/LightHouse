@@ -1,4 +1,4 @@
-"""python -m lighthouse          -> app (ventana Control + ventana Luz)
+"""python -m lighthouse          -> app (ventana Control + salidas de video)
 python -m lighthouse --test   -> self-check del motor con señal sintética (exit 0/1)
 """
 import logging
@@ -46,8 +46,13 @@ def main(argv=None):
     log.info("arranque LightHouse %s · Python %s · %s", VERSION, platform.python_version(), platform.platform())
     install_hooks()
     sys.setswitchinterval(0.001)  # el hilo de audio suelta el GIL al render en ≤ 1 ms (default 5 ms)
+    from . import win32
+    win32.set_dpi_aware()  # antes de crear Tk(): monitores y geometrías en píxeles físicos
     from .ui import App
-    App().root.mainloop()
+    try:
+        App().root.mainloop()
+    finally:
+        win32.keep_awake(False)  # también si App() o el mainloop lanzan
     return 0
 
 
