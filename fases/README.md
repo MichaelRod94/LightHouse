@@ -13,11 +13,22 @@
 | F1 | [Base modular](F1-base-modular.md) | — | ✅ | 2026-11-21: paquete `lighthouse/` v0.4.0 con config persistente, log y `python -m lighthouse --test`. Notas F2: `audio.Audio(on_block)` (`refresh/info/open/close/reconnect`) y `ui.App.on_block`; config = `config.load(defaults)/save(d)` con defaults tomados de `App.snapshot()` (nueva perilla = widget registrado en `vars`/`checks` o llave nueva en snapshot+apply). |
 | F2 | [Entrada, latencia y prioridad](F2-entrada-y-latencia.md) | F1 | ✅ | 2026-11-22: una lista con entradas WASAPI (`Entrada · `) y loopback (`Salida (loopback) · `), canal (`audio.to_mono`), ganancia AGC/Fija (`agc`, `ref_db`), SIN SEÑAL/SATURA, reconexión cada 3 s, `offset` −150…+300 ms con anticipación Al tempo, `win32.set_low_priority`, config v2 (migra `delay`→`offset` y el nombre del loopback). **CPU** (`Get-Process`, 10–15 s con audio): loopback 6,0–8,9 % (F1 con el mismo método: 8,2–11,4 %), micrófono 4,9 %, exe 6,7 % → ⚠️ el loopback no baja de 5 % (solo stream + Tk ociosos ya cuestan ~2,5 %). ⚠️ **Desviación**: `after(1)` gira al ~98 % de un núcleo en Tcl 8.6.15 (trunca la espera a 0 ms), así que el pintado lo dispara cada bloque de audio (hilo `render` → `tk.call` al hilo Tk): mediana 0,2 ms, p99 ~1 ms. `.\build.ps1` re-corrido OK (57,0 MB). Notas F4/F5: todo ctypes en `win32.py`; el pintado vive en `App.fast()` (lo llaman el hilo `render` por bloque y el loop lento a 30 Hz); el loop lento actualiza widgets con `App.put()` (solo si cambian). Pendiente manual: aplausos/voz al micrófono, desconexión USB real, Administrador de tareas, UR12 y rekordbox en sitio. |
 | F3 | [Ejecutable](F3-ejecutable.md) | F2 | ✅ | 2026-11-21 (en paralelo con F2; `.\build.ps1` re-corrido OK con F2 terminada el 2026-11-22): filtro propio (decimado ×8 + 4 biquads RBJ, ~27 µs/bloque), sin scipy; `build.ps1` → `dist\LightHouse` 57,0 MB, ZIP 23,5 MB, ventana en ~0,6–1,2 s. PyInstaller 6.22.3 en `.venv-build`. Notas: el venv usa el Python 3.14 global; `run.py` hace `sys.exit(main())`; `--test` en el exe sale con 0/1 y escribe "self-check ok" al log; `LEEME.txt` se copia al ZIP. Pendiente manual: probar en una PC sin Python y la reacción de la luz con audio real. |
-| F4 | [Looks por teclado (mapa del cliente)](F4-looks-teclado.md) | F3 | ⬜ | |
+| F4 | [Looks por teclado (mapa del cliente)](F4-looks-teclado.md) | F3 | ✅ | 2026-11-22: `lighthouse/scene.py` (15 looks latch; `compose(snap, scene, cfg) -> Frame(left, right, logo_visible)`), compuerta de golpe y limitador (6 Hz, descarta el destello) en el motor, teclas por `GetAsyncKeyState` dentro de `App.fast()` (sin `bind_all`; F1–F4 modos, 0 tap, +/− sensibilidad; `Teclas globales` apagada por defecto), barra de looks, presets `Respuesta` (Normal / Muy reactivo), config v3 (`keys`, `look_colors`, `cierre`, `strobe_min_ms`, `flash_limit`, `flash_limit_hz`, `global_keys`, `response`; el look no se guarda). **CPU** con loopback (`Get-Process`, 10 s): app 6,7–9,4 % (F3 en la misma sesión: 6,6–7,5 %), exe 5,8–7,5 %. ⚠️ **Desviaciones**: (1) la ventana Luz usa dos `Frame` con `bg`, no `Canvas`: a 1920×1080 el Canvas cuesta 7,3 ms por pintado contra 0,3 ms; (2) un destello sin golpe (tick de tempo) solo abre la compuerta `strobe_min_ms`: con la regla literal, un pad estable la dejaba abierta siempre. Si llega un golpe con la compuerta abierta, aplica la regla `cierre`. `.\build.ps1` OK (57,0 MB). Pendiente manual: mirar los looks con música, estrobo real, Bloc de notas al frente y exe con teclas reales. |
 | F5 | [Salidas múltiples y pantalla completa](F5-salidas-multiples.md) | F4 | ⬜ | |
 | F6 | [Pantalla remota por red (TV grande)](F6-red.md) | F5 | ⬜ | |
 
 Leyenda: ⬜ pendiente · 🔄 en curso · ✅ hecha.
+
+**Notas de F4 para F5:**
+- **`Engine.sample(delay_s=0.0) -> Snapshot(out, n, gate, t)`**: estado de hace `offset + delay_s`. Se llama sin lock desde el hilo Tk. El historial guarda 64 bloques (~640 ms): alcanza para offset 300 + retardo 200 ms; si se pide más, subir `maxlen`. `out` ya trae modo, master, piso y gamma; blackout y bump **no** (los decide `compose`).
+- **`scene.compose(snap, scene, cfg) -> Frame(left, right, logo_visible)`**: pura, la única que decide colores.
+  - `Cfg(master, gamma, base, colors)` es lo de cada salida: la TV con master ~30 % usa su propio `Cfg` y su propio `sample(delay)`.
+  - `unirse_a_looks` se decide fuera de `compose`. Para una salida no unida, por ejemplo, compón con `Scene(look="1")`, copiando `bump`/`blackout`.
+  - `logo_visible` es `True` solo en el look 1 sin bump **ni blackout**.
+- `Scene.n0` y `Scene.t0` se toman de `sample()` sin retardo extra. `compose` usa `k = max(n - n0, 0)`, así que una salida retrasada no ve un `k` negativo.
+- **Pintar con `Frame` + `bg`, nunca con `Canvas`**: a pantalla completa, el Canvas cuesta ~7 ms por pintado. Repintar solo si cambió (como `App.painted`).
+- Las teclas ya miran `win32.app_in_foreground()` (cualquier ventana del proceso, incluidas las salidas sin bordes de F5). No hace falta foco de Tk.
+- La ventana Control creció a 1079×763 (antes ~1048×661): revisar en pantallas de 768 px / DPI.
 
 **Descartadas tras las respuestas del cliente:**
 - **Gamepad**: "solo estaba cruzado en el camino".
@@ -211,6 +222,7 @@ Presupuesto medido/estimado por el arquitecto:
 - El color se **enciende a tope** en cada golpe.
 - Se mantiene **mientras el golpe suena**: nivel de banda ≥ `cierre` × el nivel máximo desde el golpe. `cierre` default 0.5, rango 0.2–0.9.
 - Dura como mínimo `strobe_min_ms` (default 40 ms) y luego se corta a **negro real** (piso 0, sin decay).
+- Un destello **sin golpe** (tick de tempo en un breakdown) dura solo `strobe_min_ms`. Si llega un golpe con la compuerta abierta, vuelve a aplicar la regla de `cierre` (F4).
 
 **Bump** (mantener `F`):
 - Sólido al 100 % del color del look, ignorando piso, gamma, decay y offset.

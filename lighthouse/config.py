@@ -4,17 +4,20 @@ import logging
 import os
 
 log = logging.getLogger(__name__)
-VERSION = 2
+VERSION = 3
 
 
 def _migrate(raw):
     """Sube un dict guardado por versiones anteriores al formato actual (en sitio)."""
-    if raw.get("version", 1) < 2:  # F1 -> F2: retardo -> offset; la lista de audio lleva prefijo
+    v = raw.get("version", 1)
+    if v < 2:  # F1 -> F2: retardo -> offset; la lista de audio lleva prefijo
         if "delay" in raw and "offset" not in raw:
             raw["offset"] = raw.pop("delay")
         if isinstance(raw.get("device"), str) and raw["device"]:
             raw["device"] = "Salida (loopback) · " + raw["device"]  # = audio.LOOP; F1 solo tenía loopback
-        log.info("config migrada de v%s a v%d", raw.get("version", 1), VERSION)
+    # v2 -> v3 (F4): solo llaves nuevas (teclas, colores de looks, estrobos, limitador); las ponen los defaults
+    if v < VERSION:
+        log.info("config migrada de v%s a v%d", v, VERSION)
 
 
 def path():
@@ -22,7 +25,13 @@ def path():
 
 
 def _fit(v, d):
-    """v con el tipo de d (bool/int/float/str/list de str), o None si no encaja."""
+    """v con el tipo de d (bool/int/float/str/list de str/dict de esos), o None si no encaja.
+    dict: solo las llaves de d; cada una que no encaje conserva su default."""
+    if isinstance(d, dict):
+        if not isinstance(v, dict):
+            return None
+        fits = {k: _fit(v[k], dv) if k in v else None for k, dv in d.items()}
+        return {k: dv if fits[k] is None else fits[k] for k, dv in d.items()}
     if isinstance(d, bool):
         return v if isinstance(v, bool) else None
     if isinstance(d, (int, float)):

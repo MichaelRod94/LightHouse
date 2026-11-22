@@ -1,7 +1,8 @@
 """Self-check del motor con señal sintética: python -m lighthouse --test"""
 import numpy as np
 
-from .engine import BLOCK, BandPass, Engine
+from .engine import BLOCK, BandPass, Engine, Snapshot
+from .scene import BLACK, WHITE, Cfg, Scene, compose
 
 
 def check_filtro_scipy():
@@ -55,7 +56,7 @@ def selftest():
         log = []
         for i in range(0, len(x) - BLOCK + 1, BLOCK):
             e.process(x[i:i + BLOCK])
-            log.append((e.t, e.beat, e.calm, e.out, e.flashes))
+            log.append((e.t, e.beat, e.calm, e.out, e.flashes, e.gate))
         return e, np.array(log)
 
     def flashes(log, a, b):  # flashes en [a, b) s
@@ -110,3 +111,61 @@ def selftest():
     assert np.array_equal(neg, log)                      # modo kick: offset < 0 = 0
     print(f"ok: to_mono · fija {fixed:.1f}× vs AGC {auto:.2f}× · anticipación "
           f"{lead.mean() * 1000:.0f} ms (±{np.abs(lead - 0.1).max() * 1000:.0f})")
+
+    # --- F4: compuerta, limitador, sample() y compose()
+    def gates(lg, a, b):  # duración (s) de la compuerta tras cada destello en [a, b)
+        out = []
+        for s in np.nonzero(np.diff(lg[:, 4]) > 0)[0] + 1:
+            if a <= lg[s, 0] < b:
+                j = s
+                while j < len(lg) and lg[j, 5]:
+                    j += 1
+                out.append((j - s) * BLOCK / sr)
+        return np.array(out)
+    g_kick = np.concatenate([gates(log, 0, 8), gates(log, 14, 20)])  # 1: groove, modo kick
+    assert len(g_kick) >= 27 and g_kick.min() >= 0.04 - 1e-9 and g_kick.max() < 0.45, g_kick
+    g_tick = gates(tempo, 8.2, 13.9)
+    assert len(g_tick) >= 10 and g_tick.max() <= 0.06 + 1e-9, g_tick  # breakdown: solo el mínimo
+    burst = 0.8 * np.sin(2 * np.pi * 55 * np.arange(sr * 3) / sr) * ((np.arange(sr * 3) / sr) % 0.1 < 0.04)
+    free = run(burst, min_gap=0.05, flash_limit=False)[1]
+    lim = run(burst, min_gap=0.05)[1]  # 7: golpes cada 0.1 s, limitador a 6 Hz
+    ft = ftimes(lim)
+    assert flashes(free, 0.5, 2.9) >= 20, flashes(free, 0.5, 2.9)  # sin limitador sí llegan a 10/s
+    assert len(ft) >= 10 and np.diff(ft).min() >= 1 / 6 - 1e-9, np.diff(ft)
+    e = Engine(sr)  # 8: sample(delay_s) = estado de hace delay_s (10 bloques)
+    s0, s1 = [], []
+    for i in range(0, len(sig) // 3 - BLOCK + 1, BLOCK):
+        e.process(sig[i:i + BLOCK])
+        s0.append(e.sample())
+        s1.append(e.sample(0.1))
+    assert any(s.gate for s in s1), "sample: la compuerta nunca abrió"
+    assert all(a[:3] == b[:3] and abs(a.t - b.t) < 1e-6 for a, b in zip(s1[10:], s0[:-10])), "sample(delay_s)"
+    print(f"ok: compuerta {g_kick.min() * 1000:.0f}–{g_kick.max() * 1000:.0f} ms (tick sin kick "
+          f"≤{g_tick.max() * 1000:.0f} ms) · limitador {1 / np.diff(ft).min():.1f} destellos/s · sample(0.1)")
+
+    cfg, RED, PURPLE = Cfg(), (255, 0, 0), (128, 0, 255)
+    snap = lambda n=0, gate=True, out=0.7, t=0.0: Snapshot(out, n, gate, t)
+    sc = Scene()
+    sc.select("Q", snap(10))  # n0 = 10
+    q = lambda n, gate=True: compose(snap(n, gate), sc, cfg)
+    assert [q(10 + k).left for k in (1, 2, 3)] == [WHITE, RED, WHITE]  # 2
+    assert q(11, False) == (BLACK, BLACK, False) and q(10) == (BLACK, BLACK, False)
+    sc.select("E", snap(10))
+    assert q(11)[:2] == (BLACK, RED) and q(12)[:2] == (RED, BLACK) and q(11, False)[:2] == (BLACK, BLACK)  # 3
+    sc.select("7", snap(10))
+    rainbow = [(255, 0, 0), (255, 127, 0), (255, 255, 0), (0, 255, 0), (0, 0, 255), (75, 0, 130), (143, 0, 255)]
+    assert [compose(snap(10 + k, out=1.0), sc, cfg).left for k in range(8)] == rainbow + rainbow[:1]  # 4
+    sc.select("U", snap(0, t=100.0))  # 5: ignora out; triángulo de 8 s
+    u = lambda dt, out=0.3, c=cfg: compose(snap(out=out, t=100.0 + dt), sc, c).left
+    half = Cfg(master=0.5)
+    assert u(0) == BLACK and u(4) == PURPLE and u(8) == BLACK and u(4, out=0.0) == PURPLE
+    assert u(4, c=half) == (64, 0, 128) and u(2) == (64, 0, 128), (u(4, c=half), u(2))
+    sc.select("Z", snap(0))  # 6
+    assert compose(snap(out=1.0), sc, cfg) == (BLACK, BLACK, False)
+    sc.bump = True
+    assert compose(snap(out=0.0), sc, cfg) == (WHITE, WHITE, False)
+    sc.blackout = True
+    assert compose(snap(out=1.0), sc, cfg) == (BLACK, BLACK, False)
+    sc = Scene()  # look 1 = base × out, con logo
+    assert compose(snap(out=0.5), sc, cfg) == ((128, 128, 128), (128, 128, 128), True)
+    print("ok: compose Q/E/7/U/Z, bump y blackout")

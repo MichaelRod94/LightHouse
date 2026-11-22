@@ -59,7 +59,8 @@ Hoy hay **una sola ventana Luz**. Paquete `lighthouse/`:
   - Opcional, si el rectángulo no queda exacto: `SetWindowPos(HWND_TOPMOST, …, SWP_NOACTIVATE)`.
 - **Modo ventana**: ventana normal con título, para arrastrar y montar.
 - `cursor="none"` sobre la salida.
-- `Canvas` con dos mitades (lo que hoy hace la ventana Luz), más un `image` para el logo.
+- Dos `Frame` con `bg` como mitades, igual que la ventana Luz desde F4, más un `Label` con el `PhotoImage` del logo, centrado con `place()`.
+  - **Nunca `Canvas`**: a 1920×1080 cuesta 7,3 ms por pintado contra 0,3 ms (medido en F4).
 - `render(frame)`: solo actualiza lo que cambió.
 
 **Config por salida**
@@ -96,6 +97,11 @@ Hoy hay **una sola ventana Luz**. Paquete `lighthouse/`:
   - Muestra el procedimiento: *"Pon un track con kick claro. Graba con el celular en cámara lenta (240 fps) bocina + pantallas. Cuenta cuadros entre el golpe audible y el destello: 1 cuadro ≈ 4 ms. Ajusta el offset global y el retardo de cada salida hasta alinear."*
   - **Salir** restaura los valores anteriores.
 
+**La ventana Control debe caber en pantallas de laptop**
+- Hoy mide 1079×763 a 100 %. Con DPI aware crece en píxeles, y el panel Salidas la agranda más.
+- Debe caber completa en 1366×768 al 100 % y en 1920×1080 al 150 %.
+- Si no cabe, reorganízala en pestañas `ttk.Notebook` (p. ej. Show / Audio / Salidas) sin quitar controles. La barra de looks y los indicadores quedan siempre visibles.
+
 **Migración**
 - La ventana Luz única pasa a ser la **Salida 1**, en modo ventana, con su geometría guardada.
 - `version` de config +1.
@@ -126,6 +132,7 @@ Hoy hay **una sola ventana Luz**. Paquete `lighthouse/`:
 7. CPU < 10 % de un núcleo con 3 salidas a pantalla completa y audio entrando (F2 midió 6–9 % con una ventana). Reporta el número.
 8. `.\build.ps1` pasa y el exe hace todo lo anterior.
 9. **DPI mixto** (laptop al 125–150 % + monitor al 100 %): si no puedes probarlo, documéntalo como pendiente en la nota de estado.
+10. La ventana Control cabe completa en 1366×768 al 100 % y en 1920×1080 al 150 %. Verifícalo con `winfo_reqwidth` / `winfo_reqheight` contra el área de trabajo, simulando el escalado con `tk scaling`.
 
 ## Verificación
 

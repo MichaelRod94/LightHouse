@@ -1,12 +1,21 @@
 """LightHouse: motor DSP puro (golpe / BPM / calma / tempo -> luz 0..1). Sin audio ni GUI."""
 import collections
 import math
+from typing import NamedTuple
 
 import numpy as np
 
 BLOCK = 480  # frames por bloque (~10 ms @ 48 kHz)
 DECIM = 8  # decimación antes del filtro de graves
 QS = (0.5412, 1.3066)  # Q de las 2 secciones de un Butterworth de 4º orden
+
+
+class Snapshot(NamedTuple):
+    """Estado del motor en un instante (ya con offset): lo consume scene.compose()."""
+    out: float   # intensidad 0..1 (modo, master, piso y gamma)
+    n: int       # contador de destellos
+    gate: bool   # compuerta de golpe abierta (estrobos Q–Y)
+    t: float     # tiempo del motor (s)
 
 
 def _rbj(kind, f0, fs, q):
@@ -56,7 +65,6 @@ class Engine:
         self.sr = sr
         # perillas: las escribe la GUI, las lee el hilo de audio (floats simples, el GIL basta)
         self.mode = "auto"         # auto | pulso | tranquilo | manual
-        self.blackout = self.bump = False
         self.sens = 1.5            # umbral de golpe = 0.3/sens + flujo medio (1 s)
         self.min_gap = 0.25        # s, refractario entre golpes (0.25 => máx 240 BPM)
         self.gate_db = -50.0       # compuerta, medida antes del AGC
@@ -76,6 +84,10 @@ class Engine:
         self.calm_smooth = 1.5     # s, suavizado de la respiración
         self.calm_base = 0.10      # nivel de tranquilo
         self.calm_depth = 0.40     # cuánto sube con la música (0 = nivel fijo)
+        self.cierre = 0.5          # la compuerta cierra cuando lb < cierre × pico desde el destello
+        self.strobe_min_ms = 40.0  # ... y ya pasó este mínimo
+        self.flash_limit = True    # fotosensibilidad: descarta destellos a más de flash_limit_hz
+        self.flash_limit_hz = 6.0
         self.set_band(120)
         # estado
         self.t = 0.0
@@ -86,14 +98,18 @@ class Engine:
         self.last_beat = self.last_flash = self.last_tick = -1e9
         self.beats = collections.deque(maxlen=9)
         self.taps = collections.deque(maxlen=5)
-        self.count = self.flashes = self.out_n = self.k_last = self.off = 0
+        self.count = self.flashes = self.k_last = self.off = 0
         self.phase = 0.0
         self.beat = False
         self.bpm = self.bpm_lock = 0.0
         self.calm = True
         self.calm_w = 1.0
         self.pulse = self.smooth = 0.0
-        self.hist = collections.deque([(0.0, 0)], maxlen=64)
+        self.gate = self.gate_hit = False  # compuerta; gate_hit: hubo golpe con ella abierta
+        self.gate_t = -1e9
+        self.gate_pk = 0.0
+        self.dt = BLOCK / sr
+        self.hist = collections.deque([(0.0, 0, False)], maxlen=64)  # por bloque: (out, flashes, gate)
         self.out = 0.0
         self.last_sound = -1e9  # último t sobre la compuerta (indicador SIN SEÑAL)
 
@@ -120,8 +136,15 @@ class Engine:
         bpm = self.bpm_manual if self.bpm_src == "manual" else self.bpm_lock
         return max(-self.offset, 0.0) if self.sync == "tempo" and bpm else 0.0
 
+    def sample(self, delay_s=0.0):
+        """Snapshot de hace offset + delay_s (delay_s: retardo extra por salida). Seguro desde otro hilo."""
+        h, dt = self.hist, self.dt
+        i = min(round((max(self.offset, 0.0) + delay_s) / dt), len(h) - 1)
+        out, n, gate = h[-1 - i]
+        return Snapshot(out, n, gate, self.t - i * dt)
+
     def process(self, x):
-        dt = len(x) / self.sr
+        dt = self.dt = len(x) / self.sr
         self.t += dt
         f = self.filt
         y = np.asarray(f(x)) if f is not None else x
@@ -164,15 +187,23 @@ class Engine:
         if self._tick(silent) if self.sync == "tempo" else self.beat:
             self.count += 1
             flash = self.count % self.divisor == 0
+        if flash and self.flash_limit and self.t - self.last_flash < 1 / self.flash_limit_hz:
+            flash = False  # limitador (fotosensibilidad): el destello se descarta entero
         if flash:
             s = (min(1.0, max(0.6, 2 * self.onset)) if self.beat else 0.6) if self.by_strength else 1.0
-            if self.t - self.last_flash < 1 / 3:  # fotosensibilidad: >3 flashes/s -> media profundidad
-                s *= 0.5
             self.last_flash = self.t
             self.flashes += 1
             self.pulse = max(self.pulse, s)
+            # compuerta: abre en cada destello; un tick de tempo sin golpe solo dura el mínimo
+            self.gate, self.gate_t, self.gate_pk, self.gate_hit = True, self.t, lb, self.beat
         else:
             self.pulse *= math.exp(-dt * 3 / self.decay)
+            if self.gate:  # cierra cuando el golpe deja de sonar (lb < cierre × pico) y pasó el mínimo
+                self.gate_pk = max(self.gate_pk, lb)
+                self.gate_hit = self.gate_hit or self.beat
+                if (self.t - self.gate_t) * 1000 >= self.strobe_min_ms - 1e-6 and (
+                        not self.gate_hit or lb < self.cierre * self.gate_pk):
+                    self.gate = False
         self.smooth += (lf - self.smooth) * (1 - math.exp(-dt / self.calm_smooth))
         tau = 0.5 if self.calm else 0.03  # entra a calma en ~1.5 s, sale en <100 ms (no llegar tarde al drop)
         self.calm_w += ((1.0 if self.calm else 0.0) - self.calm_w) * (1 - math.exp(-dt / tau))
@@ -181,9 +212,8 @@ class Engine:
         calm_v = self.calm_base + self.calm_depth * self.smooth  # banda completa, no solo graves
         v = {"pulso": pulse_v, "tranquilo": calm_v, "manual": self.manual,
              "auto": self.calm_w * calm_v + (1 - self.calm_w) * pulse_v}[self.mode]
-        self.hist.append((min(max(v * self.vmax, 0.0), 1.0) ** self.gamma, self.flashes))
-        out, self.out_n = self.hist[-1 - min(round(max(self.offset, 0.0) / dt), len(self.hist) - 1)]
-        self.out = 0.0 if self.blackout else 1.0 if self.bump else out  # manuales sin retardo
+        self.hist.append((min(max(v * self.vmax, 0.0), 1.0) ** self.gamma, self.flashes, self.gate))
+        self.out = self.sample().out  # blackout y bump los decide scene.compose (sin retardo)
 
     def _tick(self, silent):
         """Reloj de tempo: pulsa al BPM aunque el kick desaparezca. Un kick cerca de la grilla

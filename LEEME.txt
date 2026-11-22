@@ -37,13 +37,40 @@ Si el loopback no funciona (por ejemplo, rekordbox usa ASIO):
 - Indicadores: "SIN SEÑAL" (rojo) = no llega audio hace mas de 3 s.
   "SATURA" = la señal entra demasiado fuerte: baja la perilla.
 
-4. ATAJOS DE TECLADO
---------------------
-- Espacio: blackout (apagar la luz)
-- 1, 2, 3, 4: modos Auto / Pulso / Tranquilo / Manual
-- F (mantener): flash al 100 %
-- T: tap tempo (toca al ritmo, 3 o mas veces)
+4. LOOKS Y ATAJOS DE TECLADO
+----------------------------
+Las teclas funcionan con LightHouse al frente (ventana Control o ventana Luz).
+Cada look queda activo hasta elegir otro; tambien se eligen con el mouse en la
+barra de arriba. Al abrir, siempre arranca en 1 Blanco.
+
+  1  Blanco (o el color del panel Color)    Q  Estrobo blanco / rojo
+  2  Rojo                                   W  Estrobo blanco / morado
+  3  Azul                                   E  Pantalla partida: negro | rojo
+  4  Morado                                 R  Pantalla partida: negro | morado
+  5  Verde                                  T  Pantalla partida: negro | verde
+  6  Amarillo                               Y  Pantalla partida: negro | azul
+  7  Arcoiris: un color por golpe           U  Morado que sube 4 s y baja 4 s
+                                            Z  Negro total (ignora la musica)
+
+- 1 a 7 tambien con el teclado numerico.
+- Estrobos (Q a Y): el color prende a tope en cada golpe y se apaga cuando el
+  golpe deja de sonar (negro real entre golpes). En E a Y los lados se
+  intercambian en cada golpe. Ajuste: panel "Estrobos" (Cierre del golpe,
+  Minimo en ms).
+- Espacio: blackout (apaga todo; otra vez para volver)
+- F (mantener): bump = color del look solido al 100 % (en Z, blanco)
+- F1, F2, F3, F4: modos Auto / Pulso / Tranquilo / Manual   (antes 1 a 4)
+- 0 (o el 0 del numerico): tap tempo, toca al ritmo 3 o mas veces (antes T)
+- + / - (tambien los del numerico): sensibilidad +/- 0.1 (de 1.0 a 3.0)
 - F11 o doble clic en la ventana Luz: pantalla completa; Esc: salir
+- Panel "Teclado" -> "Teclas globales": las teclas funcionan aunque otro
+  programa este al frente. OJO: tambien llegan a rekordbox si esta al frente.
+- Panel "Respuesta" -> "Muy reactivo": golpes mas cortos y rapidos (drops).
+  "Normal" vuelve a los valores de siempre.
+- "Limitar destellos" (activo, maximo 6 por segundo): proteccion para personas
+  fotosensibles. Desactivalo solo a conciencia.
+- Las teclas y los colores de cada look se pueden cambiar en config.json
+  (llaves "keys" y "look_colors").
 
 5. DONDE QUEDAN LOS ARCHIVOS
 ----------------------------
