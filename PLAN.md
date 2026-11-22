@@ -1,5 +1,7 @@
 # LightHouse: plan de desarrollo (v3: revisión AV + decisiones del usuario)
 
+> **Siguiente etapa (producción con el cliente):** ver [fases/README.md](fases/README.md), con el plan por fases F1–F8 y sus prompts autocontenidos. Este documento queda como referencia del diseño de la maqueta.
+
 Maqueta en Python de una luz virtual **blanca** que reacciona a la música que suena en la PC.
 
 - Ejecutar: `python lighthouse.py`
