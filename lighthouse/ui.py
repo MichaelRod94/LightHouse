@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 
-from . import VERSION, config, layout, net, outputs, scene, theme, tips, tutorial, win32
+from . import VERSION, __author__, config, intro, layout, net, outputs, scene, theme, tips, tutorial, win32
 from .audio import Audio
 from .engine import BLOCK, Engine
 from .outputs import JOIN, LOGO, CONTENT, MAX_OUTPUTS, compose_output, make_output, remote_output
@@ -59,6 +59,7 @@ MODE_SHORT = [m.capitalize() for m in MODES]  # lista desplegable (densa, ahorra
 COLOR_MODES = ["Blanco", "Temperatura", "Paleta (cambia en cada flash)"]
 TABS = {"show": "Show", "audio": "Audio", "salidas": "Salidas", "ayuda": "Ayuda"}  # id -> etiqueta
 VISTAS = {"auto": "Automática", "compacto": "Compacta", "mini": "Mini"}
+APP_NAME = "LightHouse"  # {app} de la intro
 TUTORIAL = ("preguntar", "no_preguntar", "visto")  # ui.tutorial
 STATES = ("BLACKOUT", "BUMP", "AUTO · TRANQUILO", "AUTO · PULSO", "PULSO", "TRANQUILO", "MANUAL")
 AUTO_PREFIX = "AUTO · "  # en densa no se muestra: el modo ya está en la lista desplegable
@@ -141,9 +142,10 @@ def hexrgb(c):
 
 
 class App:
-    def __init__(self, headless=False, scaling=None):
+    def __init__(self, headless=False, scaling=None, con_intro=True):
         """headless: raíz y ventanas retiradas, sin audio, sin hilo render, sin leer ni escribir config.json y
-        sin keep_awake (self-check de la interfaz). scaling: `tk scaling` previo a los widgets (2.0 = 150 %)."""
+        sin keep_awake (self-check de la interfaz). scaling: `tk scaling` previo a los widgets (2.0 = 150 %).
+        con_intro=False (--sin-intro): nunca muestra la animación de entrada."""
         import tkinter as tk
         from tkinter import font as tkfont
         from tkinter import ttk
@@ -199,7 +201,8 @@ class App:
         self.tut_state = "preguntar"  # ui.tutorial: preguntar · no_preguntar · visto
         self.band_off = False       # "Ahora no": sin banda hasta el próximo arranque
         self.band_on = False        # la banda de primer arranque está a la vista
-        self.intro_on = False       # F13: mientras corre la intro no se muestra la banda
+        self.intro = None           # F13: la animación de entrada viva (intro.Intro); mientras corre no hay banda
+        self.intro_on = False
 
         root = self.root = tk.Tk()
         root.withdraw()  # sin parpadeo mientras se construye; se muestra al final (salvo headless)
@@ -235,6 +238,8 @@ class App:
         root.bind("<FocusOut>", lambda e: self.set_bump_mouse(False) if self.bump_mouse else None)
         root.bind("<Escape>", lambda e: root.focus_set())  # devuelve el foco a la ventana (teclas activas)
         root.bind("<MouseWheel>", self.on_wheel)
+        root.bind("<Key>", self.skip_intro, add="+")  # cualquier tecla o clic quita la intro
+        root.bind("<Button>", self.skip_intro, add="+")
         self.tip = tips.Tooltip(self)  # después de los binds de la raíz: los suyos van con add="+"
         self.tut = tutorial.Tutorial(self)
 
@@ -265,6 +270,8 @@ class App:
         threading.Thread(target=self.waker, name="render", daemon=True).start()
         self.refresh(cfg["device"] or None)
         self.open()
+        if con_intro and self.intro_var.get() and self.vista != "mini":  # con el show ya corriendo
+            self.start_intro(int(g[1]), int(g[2]))
         root.deiconify()
         if zoom:
             root.state("zoomed")
@@ -1015,6 +1022,9 @@ class App:
         self.reg(ttk.Checkbutton(f, text="Mostrar ayudas al pasar el ratón", variable=self.tips_on, takefocus=0),
                  "ayuda.tips").pack(anchor="w", pady=(S("md"), 0))
         self.tips_on.trace_add("write", lambda *_: self.tip.hide())
+        self.intro_var = self.tk.BooleanVar(value=True)  # ui.intro
+        self.reg(ttk.Checkbutton(f, text="Animación de entrada", variable=self.intro_var, takefocus=0),
+                 "ayuda.intro").pack(anchor="w", pady=(S("md"), 0))
 
     def open_logs(self):
         d = config.log_dir()
@@ -1507,6 +1517,7 @@ class App:
         down = {vk for vk in self.vk_actions if win32.key_down(vk)}
         if self.held is not None:  # None: recién recuperado el permiso, solo se toma referencia
             for vk in down - self.held:
+                self.skip_intro()  # una tecla de show quita la intro y además hace su acción
                 for act in self.vk_actions[vk]:
                     self.key_action(act)
         self.held = down
@@ -1775,7 +1786,7 @@ class App:
                  outputs=[o.snapshot() for o in self.outputs],
                  ui={"theme": self.theme_name, "vista": self.vista, "tab": self.tab_var.get(),
                      "avanzado": dict(self.adv_open), "tab_nav": self.tab_nav.get(), "tips": self.tips_on.get(),
-                     "tutorial": self.tut_state})
+                     "tutorial": self.tut_state, "intro": self.intro_var.get()})
         if self.root.winfo_viewable():  # en Mini (a mano) la ventana es la mini; geo_control, la normal
             if self.vista != "mini":
                 self.geo["geo_control"] = self.root.geometry()
@@ -1851,6 +1862,7 @@ class App:
             self.set_adv(cid, u["avanzado"].get(cid, False))
         self.tab_nav.set(u["tab_nav"])
         self.tips_on.set(u["tips"])
+        self.intro_var.set(u["intro"])
         if u["tutorial"] not in TUTORIAL:
             log.warning("config: ui.tutorial=%r no es válida; se usa 'preguntar'", u["tutorial"])
         self.set_tutorial(u["tutorial"] if u["tutorial"] in TUTORIAL else "preguntar")
@@ -2018,6 +2030,8 @@ class App:
         e, put, sc, chip = self.eng, self.put, self.scene, self.chip_set
         self.cfg = Cfg(master=e.vmax, gamma=e.gamma, base=tuple(self.base_rgbs()), colors=self.cfg.colors)
         self.fast()  # sin bloques (loopback en silencio, sin stream) también se pinta
+        if self.intro is not None:
+            self.tick_intro(now)
         w, y = self.mw, self.my
         put(self.meter.coords, self.bar_l, 0, y[0], round(w * min(e.lb, 1)), y[1])
         put(self.meter.coords, self.bar_o, 0, y[2], round(w * min(e.o_disp, 1)), y[3])
@@ -2058,6 +2072,32 @@ class App:
             w for o in self.outputs for w in (f"{o.name}: {o.warn}" if o.warn else "", o.logo_err) if w))
         if self.tut.on:
             self.tut.tick()
+
+    def tick_intro(self, now):
+        """La intro avanza desde aquí (sin timer propio); si algo falla, se quita y la app sigue sin ella."""
+        try:
+            self.intro.tick(now)
+        except Exception:
+            log.warning("intro: falló; se quita", exc_info=True)
+            self.intro.close()
+
+    def start_intro(self, w, h):
+        """Crea la intro sobre Control (ventana de w×h px). Sin intro si falta algo, no cabe o no se puede crear."""
+        m = intro.load(intro.resource_path("assets", "intro", "intro.json"))
+        if m is None:
+            return
+        z = intro.zoom_for(self.scale)
+        if w < m.lienzo[0] * z or h < m.lienzo[1] * z:
+            log.info("intro: la ventana es más chica que el lienzo; sin intro")
+            return
+        try:
+            intro.Intro(self, m, {"app": APP_NAME, "version": VERSION, "autor": __author__})
+        except Exception:
+            log.warning("intro: no se pudo crear; sin intro", exc_info=True)
+
+    def skip_intro(self, _=None):
+        if self.intro is not None:
+            self.intro.skip()
 
     def put(self, fn, *args, **kw):
         """fn(*args, **kw) solo si cambió desde la última vez: cada config/coords hace redibujar a Tk."""

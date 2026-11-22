@@ -61,8 +61,8 @@ def check_sin_colores_sueltos():
     print("ok: ui.py, layout.py, tips.py y tutorial.py sin literales de color (salvo PALETTE y KELVIN)")
 
 
-# ids del catálogo (fases/diseno-ui.md §5.4) que existen desde F11. Faltan a propósito los de F13–F14
-# (ayuda.intro, ayuda.tema) y calib.salir (se crea al abrir Calibrar sincronía).
+# ids del catálogo (fases/diseno-ui.md §5.4) que existen desde F13. Falta a propósito el de F14
+# (ayuda.tema) y calib.salir (se crea al abrir Calibrar sincronía).
 CATALOG = {
     *(f"look.{k}" for k in "1234567QWERTYUZ"),
     "vivo.punto", "vivo.medidor", "vivo.bpm", "vivo.look", "vivo.estado", "vivo.previa", "vivo.teclas",
@@ -80,7 +80,7 @@ CATALOG = {
     "salidas.agregar", "salidas.quitar", "salidas.tv", "salidas.identificar", "salidas.calibrar", "sal.nombre",
     "sal.monitor", "sal.completa", "sal.destino", "sal.puerto", "sal.master", "sal.retardo", "sal.contenido",
     "sal.logo", "sal.logo_buscar", "sal.unirse", "ayuda.carpeta", "vista.fijar", "vista.ampliar", "vista.sin_foco",
-    "ayuda.tips", "ayuda.tutorial", "tut.ver", "tut.ahora_no", "tut.no_preguntar", "tut.atras", "tut.siguiente",
+    "ayuda.tips", "ayuda.intro", "ayuda.tutorial", "tut.ver", "tut.ahora_no", "tut.no_preguntar", "tut.atras", "tut.siguiente",
     "tut.omitir"}
 
 
@@ -649,6 +649,129 @@ def check_tutorial():
         app.quit()
 
 
+def check_intro():
+    """F13: manifiesto real, value, frame_index, resolve y color (puras), manifiestos rotos, reproductor genérico
+    con un manifiesto mínimo, sin hardcode en intro.py y omitir a mitad."""
+    import ast
+    import json
+    import re
+    import sys
+    import tempfile
+    from . import VERSION, intro, scene, theme
+    from .ui import App
+
+    # 1 · manifiesto real
+    folder = intro.resource_path("assets", "intro")
+    m = intro.load(os.path.join(folder, "intro.json"))
+    assert m is not None, "intro.json no es válido"
+    assert all(os.path.isfile(p) for p in m.files()) and m.duracion_ms <= 3000, m.duracion_ms
+    total = sum(os.path.getsize(os.path.join(folder, f)) for f in os.listdir(folder))
+    assert total <= 3 * 1024 * 1024, total
+
+    # 2 · value
+    for e, mid in (("lineal", 0.5), ("in_cubic", 0.125), ("out_cubic", 0.875), ("in_out", 0.5)):
+        tr = [[100, 2.0], [300, 6.0, e]]
+        assert intro.value(tr, 100) == 2.0 and intro.value(tr, 300) == 6.0, e
+        assert abs(intro.value(tr, 200) - (2 + 4 * mid)) < 1e-9, (e, intro.value(tr, 200))
+    tr = [[100, 2.0], [300, 6.0, "corte"]]
+    assert intro.value(tr, 299.9) == 2.0 and intro.value(tr, 300) == 6.0
+    assert intro.value(tr, 0) == 2.0 and intro.value(tr, 9999) == 6.0
+    tr = [[0, False], [50, True, "corte"], [80, False]]
+    assert (intro.value(tr, 10), intro.value(tr, 60), intro.value(tr, 80)) == (False, True, False)
+
+    # 3 · frame_index
+    por_tiempo = {"cuadros": 11, "fps": 10}
+    assert [intro.frame_index(por_tiempo, t) for t in (0, 500, 1000, 5000)] == [0, 5, 10, 10]
+    por_nivel = {"cuadros": 11, "cuadro_por": "nivel", "pistas": {"nivel": [[0, 0.0], [1000, 1.0]]}}
+    assert [intro.frame_index(por_nivel, t) for t in (0, 500, 1000)] == [0, 5, 10]
+
+    # 4 · resolve y color
+    assert intro.resolve("v{version} {x}", {"version": VERSION}) == f"v{VERSION} {{x}}"
+    th = theme.get(theme.DEFAULT)
+    looks = {k: v[2] for k, v in scene.LOOKS.items() if v[2]}
+    assert intro.color("token:intro_fg", th, looks) == th["intro_fg"]
+    assert intro.color("look:2", th, looks) == scene.LOOKS["2"][2][0] == "#FF0000"
+    assert intro.color("nada:raro", th, looks) == th["intro_fg"] and intro.color("look:99", th, looks) == th["intro_fg"]
+    assert intro.fuente("token:font.intro", th) == th["font.intro"] and intro.fuente("x", th) == th["font.body"]
+
+    app = App(headless=True)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            def write(data, name="intro.json"):
+                p = os.path.join(d, name)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(data if isinstance(data, str) else json.dumps(data))
+                return p
+            # una secuencia de 2 cuadros (PNG escritos por Tk) + una capa color + un texto
+            for i in range(2):
+                img = app.tk.PhotoImage(master=app.root, width=8, height=8)
+                img.put("gray%d" % (30 + 40 * i), to=(0, 0, 8, 8))
+                img.write(os.path.join(d, f"q_{i}.png"), format="png")
+                for k in range(2):  # y los mismos cuadros partidos en 2 franjas
+                    img.write(os.path.join(d, f"s_{i}_{k}.png"), format="png")
+                del img
+            base = {"formato": 1, "lienzo": [64, 36], "duracion_ms": 300, "fondo": "token:intro_bg", "capas": [
+                {"id": "c", "tipo": "color", "color": "look:2", "rect": [0, 0, 0.5, 1],
+                 "pistas": {"visible": [[0, False], [100, True, "corte"], [200, False]]}},
+                {"id": "q", "tipo": "secuencia", "archivos": "q_{}.png", "cuadros": 2, "fps": 10, "pos": [0.5, 0.5]},
+                {"id": "s", "tipo": "secuencia", "archivos": "s_{}_{}.png", "cuadros": 2, "franjas": 2, "fps": 10},
+                {"id": "t", "tipo": "texto", "texto": "{app} v{version}", "fuente": "token:font.small",
+                 "color": "token:intro_fg", "pistas": {"y": [[0, 0.9], [300, 0.5, "out_cubic"]]}}]}
+            # 5 · manifiestos rotos: None sin lanzar
+            rotos = {"sin archivo": os.path.join(d, "no_existe.json"), "JSON inválido": write("{no es json", "mal.json"),
+                     "capa desconocida": write(dict(base, capas=[{"id": "x", "tipo": "holograma"}]), "tipo.json"),
+                     "PNG que falta": write(dict(base, capas=[dict(base["capas"][1], archivos="no_{}.png")]), "png.json"),
+                     "dura de más": write(dict(base, duracion_ms=3001), "dura.json")}
+            for nombre, p in rotos.items():
+                assert intro.load(p) is None, nombre
+            # 6 · genérico: un manifiesto mínimo se reproduce con tiempos simulados y no deja nada vivo
+            mm = intro.load(write(base))
+            assert mm is not None and len(mm.files()) == 6
+
+            def estado():
+                return (app.intro, app.intro_on, app.band_on, len(app.root.winfo_children()),
+                        len(app.root.tk.call("image", "names")))
+            antes = estado()
+            it = intro.Intro(app, mm, {"app": "Prueba", "version": VERSION})
+            assert app.intro is it and app.intro_on and len(it.cv.find_all()) == 5
+            assert estado()[1:3] == (True, False) and app.band_on is False
+            texto = [it.cv.itemcget(i, "text") for i in it.cv.find_all() if it.cv.type(i) == "text"]
+            assert texto == [f"Prueba v{VERSION}"], texto
+            fr, n, now = it.fr, 0, 1000.0
+            while app.intro is not None:
+                it.tick(now + n * 0.033)  # tiempo simulado: 30 Hz
+                n += 1
+                assert n < 100
+            assert not fr.winfo_exists() and not it.photo and not it.raw and estado() == antes, (estado(), antes)
+            # 8 · omitir a mitad deja la app igual que si hubiera terminado
+            it = intro.Intro(app, mm, {"app": "Prueba"})
+            for k in range(4):
+                it.tick(now + k * 0.033)
+            assert app.intro is it
+            it.skip()
+            assert estado() == antes and it.fr is None
+            it.skip()  # idempotente
+            # tick con la capa ya cerrada no hace nada
+            it.tick(now)
+    finally:
+        app.quit()
+
+    # 7 · sin hardcode: intro.py sin nombres de archivo PNG ni literales de color (en el exe no hay código fuente)
+    path = getattr(intro, "__file__", None)
+    if getattr(sys, "frozen", False) or not path or not path.endswith(".py"):
+        print("aviso: sin código fuente (exe), se salta el check de intro sin hardcode")
+    else:
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        bad = [(n.lineno, n.value) for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+               and (re.search(r"\.png", n.value, re.I) or re.fullmatch(r"#[0-9a-fA-F]{3,12}", n.value)
+                    or n.value.lower() in COLOR_NAMES or n.value.startswith("System"))]
+        assert not bad, f"hardcode en intro.py: {bad}"
+    print(f"ok: intro: manifiesto real ({len(m.files())} archivos, {m.duracion_ms} ms, {total / 1048576:.2f} MB), value "
+          f"(4 easings + corte + bordes), frame_index, resolve y color; 5 manifiestos rotos -> None; manifiesto mínimo "
+          f"genérico reproducido sin dejar capa ni imágenes; omitir = terminar; intro.py sin hardcode")
+
+
 def _descendants(w):
     for c in w.winfo_children():
         yield c
@@ -919,3 +1042,5 @@ def selftest():
     check_tips()
     # --- F11: tutorial interactivo (pasos, geometría pura, recorrido, avance por acción, pregunta, teclas)
     check_tutorial()
+    # --- F13: intro (manifiesto, funciones puras, reproductor genérico, omitir)
+    check_intro()

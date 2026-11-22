@@ -1,0 +1,16 @@
+{
+  "app": "LightHouse",
+  "version": "1.0.0",
+  "autor": "Michael Rodríguez Reséndiz",
+  "looks": {
+    "2": [
+      "#FF0000"
+    ],
+    "3": [
+      "#0030FF"
+    ],
+    "4": [
+      "#8000FF"
+    ]
+  }
+}

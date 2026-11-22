@@ -192,6 +192,7 @@ TIPS = {
     # ayuda
     "ayuda.tips": "Muestra explicaciones como esta al dejar el ratón sobre un control.",
     "ayuda.carpeta": "Abre la carpeta con el archivo que hay que enviar si algo falla.",
+    "ayuda.intro": "Muestra la animación corta al abrir LightHouse. La luz y el sonido arrancan igual con o sin ella.",
     "ayuda.tutorial": "Abre un recorrido de 2 minutos que te enseña lo básico. Puedes repetirlo las veces que "
                       "quieras y salir con Esc.",
     # tutorial (banda de primer arranque y globo)
@@ -237,7 +238,7 @@ LABELS = {
     "sal.master": "Brillo de esta salida (%)", "sal.retardo": "Retraso de esta pantalla (ms)",
     "sal.contenido": "Contenido", "sal.logo": "Logo (PNG)", "sal.logo_buscar": "Buscar logo",
     "sal.unirse": "Seguir los looks", "calib.salir": "Salir", "ayuda.tips": "Mostrar ayudas",
-    "ayuda.carpeta": "Abrir carpeta de registros", "ayuda.tutorial": "Ver tutorial", "tut.ver": "Ver tutorial",
+    "ayuda.carpeta": "Abrir carpeta de registros", "ayuda.intro": "Animación de entrada", "ayuda.tutorial": "Ver tutorial", "tut.ver": "Ver tutorial",
     "tut.ahora_no": "Ahora no", "tut.no_preguntar": "No volver a preguntar", "tut.atras": "Atrás",
     "tut.siguiente": "Siguiente", "tut.omitir": "Omitir tutorial",
     **{f"avanzado.{c}": "Avanzado" for c in ADV_CARDS},
@@ -373,7 +374,7 @@ class Tooltip:
 
     # --- mostrar y ocultar
     def on(self):
-        return bool(self.app.tips_on.get())
+        return bool(self.app.tips_on.get()) and not self.app.intro_on  # durante la intro callan
 
     def enter(self, w, wid):
         """El puntero entró en el control: tras el retardo (corto si hace poco hubo otro tooltip), se muestra."""

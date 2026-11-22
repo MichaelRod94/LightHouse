@@ -4,3 +4,9 @@ build/
 dist/
 .venv*/
 fases/intro-propuestas/
+tools/intro/*/cuadros/
+tools/intro/*/capas/
+tools/intro/*/*.blend1
+tools/intro/*/preview.mp4
+tools/intro/*/tira.png
+tools/intro/*/medidas.json

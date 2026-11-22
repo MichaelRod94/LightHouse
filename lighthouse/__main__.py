@@ -1,4 +1,4 @@
-"""python -m lighthouse          -> app (ventana Control + salidas de video)
+"""python -m lighthouse [--sin-intro]  -> app (ventana Control + salidas de video; sin la animación de entrada)
 python -m lighthouse --test   -> self-check del motor con señal sintética (exit 0/1)
 python -m lighthouse --pantalla [--puerto N] [--monitor N] [--logo ruta.png]  -> receptor de la TV remota
 """
@@ -56,7 +56,7 @@ def main(argv=None):
     win32.set_dpi_aware()  # antes de crear Tk(): monitores y geometrías en píxeles físicos
     from .ui import App
     try:
-        App().root.mainloop()
+        App(con_intro="--sin-intro" not in argv).root.mainloop()
     finally:
         win32.keep_awake(False)  # también si App() o el mainloop lanzan
     return 0

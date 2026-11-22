@@ -28,6 +28,7 @@ version = VSVersionInfo(
 a = Analysis(
     ["run.py"],
     binaries=collect_dynamic_libs("pyaudiowpatch"),
+    datas=[("assets/intro", "assets/intro")],  # animación de entrada (tools/ nunca entra al exe)
     excludes=["scipy", "cv2", "PIL", "matplotlib", "pandas"],
 )
 pyz = PYZ(a.pure)

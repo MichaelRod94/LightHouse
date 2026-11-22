@@ -1,0 +1,36 @@
+{
+  "formato": 1,
+  "lienzo": [800, 450],
+  "duracion_ms": 2600,
+  "fondo": "#000000",
+  "capas": [
+    {"id": "lente", "tipo": "secuencia", "archivos": "lente_{:02d}_{}.png", "cuadros": 8, "franjas": 3, "cuadro_por": "nivel", "pos": [0.5, 0.5],
+     "pistas": {
+      "visible": [[0, false], [200, true, "corte"]],
+      "nivel": [[0, 0.0],
+        [400, 1.0, "corte"],
+        [440, 1.0],
+        [600, 0.44, "out_cubic"],
+        [860, 0.18, "out_cubic"],
+        [869, 1.0, "corte"],
+        [909, 1.0],
+        [1069, 0.44, "out_cubic"],
+        [1329, 0.18, "out_cubic"],
+        [1338, 1.0, "corte"],
+        [1378, 1.0],
+        [1538, 0.44, "out_cubic"],
+        [1798, 0.18, "out_cubic"],
+        [1806, 1.0, "corte"],
+        [1846, 1.0],
+        [2006, 0.44, "out_cubic"],
+        [2266, 0.18, "out_cubic"],
+        [2275, 1.0, "corte"],
+        [2315, 1.0],
+        [2475, 0.44, "out_cubic"],
+        [2735, 0.18, "out_cubic"]]}},
+    {"id": "nombre", "tipo": "texto", "texto": "{app}", "fuente": "token:font.intro", "color": "token:intro_fg", "pos": [0.5, 0.836],
+     "pistas": {"visible": [[0, false], [2200, true, "corte"]]}},
+    {"id": "version", "tipo": "texto", "texto": "v{version}", "fuente": "token:font.small", "color": "token:fg_muted", "pos": [0.5, 0.911],
+     "pistas": {"visible": [[0, false], [2200, true, "corte"]]}}
+  ]
+}
