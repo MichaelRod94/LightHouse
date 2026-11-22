@@ -1,6 +1,6 @@
 # Fase F13: Intro — implementación de la animación elegida
 
-> **Prompt autocontenido.** Pégalo completo en una sesión **nueva** del asistente de código, abierta en `C:\Users\desarrollo 6\Desktop\CodeP\LightHouse`. Si la propuesta elegida necesita volver a renderizar, la sesión necesita las herramientas de **Blender por MCP**.
+> **Prompt autocontenido.** Pégalo completo en una sesión **nueva** del asistente de código, abierta en `C:\Users\desarrollo 6\Desktop\CodeP\LightHouse`. Si la propuesta elegida necesita volver a renderizar, la sesión necesita **Blender 5.2+** instalado (lo invoca `tools/intro/generar.ps1` en segundo plano).
 
 ## Rol
 
@@ -12,7 +12,7 @@ Eres un desarrollador Python senior con oficio en Tkinter (Canvas, `PhotoImage`,
 
 Paquete `lighthouse/`: `engine.py`, `audio.py`, `scene.py`, `outputs.py`, `net.py`, `pantalla.py` (receptor `--pantalla`), `win32.py` (**todo** el ctypes), `config.py`, `theme.py` (tokens), `layout.py`, `tips.py`, `tutorial.py`, `selftest.py`, `ui.py` (ventana **Control**) y `__main__.py`. `build.ps1` + `lighthouse.spec` generan el exe (~57 MB; hoy el spec no empaqueta archivos de datos).
 
-En F12 se produjeron tres propuestas de animación de entrada con Blender y **el usuario eligió una** (`fases/intro-propuestas/ELEGIDA.md`).
+En F12 se produjeron tres propuestas de animación de entrada con Blender y **el usuario eligió C · "Primer golpe" sin audio** (`fases/intro-propuestas/ELEGIDA.md`; esa carpeta es local e ignorada por git). La lente parpadea con una **pista autoral fija** del manifiesto (pista `nivel`). La intro **no lee el audio ni el dispositivo**.
 
 **Restricciones duras del proyecto** (medidas; no se discuten):
 - Solo Tkinter/ttk. **Ninguna dependencia nueva**: Pillow no va en el exe; `PhotoImage` con PNG nativo sí. Exe ≤ 80 MB.
@@ -24,14 +24,14 @@ En F12 se produjeron tres propuestas de animación de entrada con Blender y **el
 
 ## Lee primero
 
-1. `fases/intro-propuestas/ELEGIDA.md` y la carpeta de la propuesta elegida (`storyboard.md`, `params.json`, `build.py`, `tira.png`).
+1. `fases/intro-propuestas/ELEGIDA.md` (trae el manifiesto sugerido y la nota de rendimiento) y la carpeta `fases/intro-propuestas/C-primer-golpe/` (`storyboard.md`, `params.json`, `build.py`, `tira.png`).
 2. `fases/diseno-ui.md`: **§7 completo** (reglas, **qué significa "sin hardcode"**, formato del manifiesto, presupuesto), §8 (`ui.intro`), §9 (tokens `intro_bg`, `intro_fg`, `font.intro`).
 3. `fases/README.md`: sección *Etapa 2: interfaz* (notas de las fases anteriores) y *Arquitectura → Latencia*.
 4. `lighthouse/ui.py` (`__init__`, `fast`, `slow`, `put`), `lighthouse/theme.py`, `lighthouse/__main__.py`, `lighthouse/selftest.py`, `lighthouse.spec`, `build.ps1`, `LEEME.txt`.
 
 ## Precondiciones
 
-- `fases/README.md` marca **F12 ✅** y existe `fases/intro-propuestas/ELEGIDA.md`. Si no, **detente y pregunta al usuario cuál elige**.
+- `fases/README.md` marca **F12 ✅** y existe `fases/intro-propuestas/ELEGIDA.md` (en la carpeta local, no en git). Si no, **detente y pregunta al usuario cuál elige**.
 - `fases/README.md` marca **F8 ✅** como mínimo (hace falta `ui` en la config y la pestaña Ayuda). Si F9, F10 o F11 están en curso en otra sesión, espera a que terminen: todas tocan `ui.py`.
 - `python -m lighthouse --test` pasa y `.\build.ps1` construye.
 - `git status`.
@@ -48,21 +48,34 @@ En F12 se produjeron tres propuestas de animación de entrada con Blender y **el
 ### Entra
 
 **Assets: `assets/intro/`**
-- `intro.json` (el manifiesto) + los PNG de la propuesta elegida, exportados desde su carpeta de F12 con sus scripts (`build.py` / render). Si hay que ajustar algo, se cambia `params.json` y se vuelve a renderizar; **no se retocan imágenes a mano**.
+- `intro.json` (el manifiesto; `ELEGIDA.md` trae uno sugerido) + los 16 PNG `lente_00…lente_15`, generados con el generador de C desde `tools/intro/`. Si hay que ajustar algo, se cambia `params.json` y se vuelve a renderizar; **no se retocan imágenes a mano**.
 - PNG de 8 bits, luz neutra (blancos y grises). Presupuesto: **≤ 3 MB** en total. Si se pasa: menos cuadros, lienzo 480×270 o paleta reducida — decisiones que quedan en el manifiesto y en `params.json`.
 - La versión, el nombre del dispositivo y cualquier texto variable **no** van en los PNG.
 - `lighthouse.spec`: agrega `assets/intro` a `datas`. Una función `resource_path()` resuelve la carpeta tanto desde el código fuente como desde el exe congelado (`sys._MEIPASS`).
 
+**Generador: `tools/intro/`** (va al repo y **no** entra al exe; `fases/intro-propuestas/` es local e ignorada por git)
+- Copia desde `fases/intro-propuestas/`:
+  - `generar.ps1`, `comun.py` y `app.json`;
+  - `C-primer-golpe/` con `build.py`, `params.json`, `escena.blend` y `storyboard.md`;
+  - `ELEGIDA.md`, que pasa a ser `tools/intro/LEEME.md`.
+- Las rutas ya funcionan desde ahí. Comprueba con `.\tools\intro\generar.ps1 -Concepto C-primer-golpe` que se regeneran los mismos cuadros:
+  - `generar.ps1` busca la raíz del repo hacia arriba y reescribe `app.json` a su lado;
+  - `build.py` importa `comun.py` de su carpeta o de la de arriba.
+- En `.gitignore`: `tools/intro/*/cuadros/`, `tools/intro/*/capas/` y `tools/intro/*/*.blend1`.
+- Los PNG finales se copian de `tools/intro/C-primer-golpe/cuadros/` a `assets/intro/`. `lighthouse.spec` nunca empaqueta `tools/`.
+
 **Nuevo `lighthouse/intro.py`**
 - **`load(path) -> Manifest | None`**: lee y **valida** `intro.json` (formato de `fases/diseno-ui.md` §7.3). Cualquier error — archivo ausente, JSON inválido, capa de tipo desconocido, PNG que falta, duración > 3000 ms — devuelve `None` y deja un aviso en el log. **Nunca lanza.**
 - **`value(track, t_ms)`**: función **pura** que interpola una pista `[[t_ms, valor, easing?], …]`. Easings: `lineal`, `in_cubic`, `out_cubic`, `in_out`, `corte`. Antes del primer punto vale el primero; después del último, el último.
-- **`frame_index(layer, t_ms, nivel)`**: función **pura**: cuadro de una capa `secuencia` por tiempo (`fps`) o por `"cuadro_por": "nivel"` (nivel de audio 0..1).
-- **`resolve(texto, datos)`** y **`color(ref, theme, looks)`**: funciones puras: rellenan `{app}`, `{version}`, `{autor}`, `{dispositivo}` y resuelven `"token:…"` / `"look:N"`. Una referencia desconocida cae a `intro_fg` con aviso.
+- **`frame_index(layer, t_ms)`**: función **pura**: cuadro de una capa `secuencia` por tiempo (`fps`) o por `"cuadro_por": "nivel"`, con el nivel 0..1 tomado de la pista `nivel` de la propia capa (`round(nivel × (cuadros − 1))`; es el parpadeo autoral de C, no el nivel de audio).
+- **`resolve(texto, datos)`** y **`color(ref, theme, looks)`**: funciones puras: rellenan `{app}`, `{version}` y `{autor}`, y resuelven `"token:…"` / `"look:N"`. Una referencia desconocida cae a `intro_fg` con aviso.
 - **`Intro(app, manifest)`**:
   - Una capa que cubre Control: un `Frame` con `place(relwidth=1, relheight=1)` de color `fondo`, con **un Canvas del tamaño del lienzo** centrado.
   - Tipos de capa: `secuencia`, `imagen`, `texto` (ítem de texto del Canvas con la fuente del token) y `color` (rectángulo).
   - **`tick(now)`** se llama desde `App.slow()` mientras la intro está viva. Calcula el tiempo transcurrido, actualiza **solo lo que cambió** y, al pasar `duracion_ms`, termina. **Ningún `after` propio.** Si un tick llega tarde, salta cuadros (va por tiempo, no por contador).
   - **Carga perezosa**: como mucho **un** `PhotoImage` decodificado por tick; nada de precargar todos los cuadros en `__init__`. Al terminar se liberan todas las imágenes y se destruye la capa.
+    - Medido en F12 (Tk 8.6.15, 640×360 en gris): `PhotoImage(file=…)` ≈ 4,3 ms (p95 4,9), por encima del presupuesto; `PhotoImage(data=…)` con los bytes leídos al empezar (0,5 MB) ≈ 3,1 ms (p95 3,5).
+    - Usa esa vía: decodifica en el primer uso, reutiliza las imágenes ya decodificadas (la pista repite cuadros) y, en los ticks libres, adelanta el siguiente cuadro de la pista.
   - Con escala de pantalla ≥ 200 % las imágenes se amplían con `zoom(2)`; si no, tamaño natural.
 - **El reproductor no contiene nada específico de la propuesta elegida**: ni coordenadas, ni tiempos, ni textos, ni colores, ni nombres de archivo. Probarlo con un segundo manifiesto mínimo debe funcionar sin tocar `intro.py`.
 
@@ -72,7 +85,7 @@ En F12 se produjeron tres propuestas de animación de entrada con Blender y **el
 - **Omitir**: cualquier tecla (`<Key>` sobre la raíz) o clic (`<Button>`) la quita al instante. Además, si `poll_keys` detecta una tecla de show durante la intro, la intro se quita **y la acción se ejecuta** (el `2` salta la intro y pone el look 2).
 - Durante la intro: los tooltips callan y la banda "¿Ver tutorial?" espera; aparece al terminar.
 - Pestaña Ayuda → tarjeta `ayuda`: casilla **"Animación de entrada"** (`ayuda.intro`, `ui.intro`, activa por defecto), registrada en `App.ids` y con texto en `tips.TIPS`.
-- Si la propuesta usa el nivel de audio (`"cuadro_por": "nivel"`) o `{dispositivo}`, se leen del motor y de la lista de dispositivos; sin audio, el manifiesto trae su pista de respaldo.
+- La intro no lee el motor ni la lista de dispositivos: el parpadeo sale solo de la pista `nivel` del manifiesto.
 
 **`__main__.py`**
 - Opción `--sin-intro`. `--pantalla` y `--test` nunca muestran intro.
