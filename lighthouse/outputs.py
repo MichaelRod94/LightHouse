@@ -5,7 +5,7 @@ import logging
 import math
 import re
 
-from . import win32
+from . import net, win32
 from .scene import BLACK, Cfg, Scene, compose
 
 log = logging.getLogger(__name__)
@@ -52,7 +52,18 @@ def default_output(n, mons, used=()):
     off = 60 + 40 * (n - 1)
     return dict(nombre=f"Salida {n}", monitor=m.device if m else "", monitor_rect=rect_str(m) if m else "",
                 pantalla_completa=False, master=100.0, retardo_extra_ms=0.0, contenido=LIGHT, logo="",
-                unirse_a_looks="siempre", geo=f"640x400+{off}+{off}")
+                unirse_a_looks="siempre", geo=f"640x400+{off}+{off}",
+                tipo="local", destino=net.AUTO, puerto=float(net.PORT))
+
+
+def remote_output(n):
+    """Preset "TV grande (remota)": se une excepto en 1, con logo y master 30 %, hacia la pantalla remota."""
+    return dict(default_output(n, ()), nombre="TV grande (remota)", tipo="remota", contenido=LOGO,
+                unirse_a_looks="excepto en 1", master=30.0)
+
+
+def make_output(app, d, mons):
+    return RemoteOutput(app, d) if d.get("tipo") == "remota" else Output(app, d, mons)
 
 
 def resolve(device, rect, mons):
@@ -82,9 +93,63 @@ def geo_ok(geo, mons):
     return monitor_at(x + 40, y + 10, mons) is not None
 
 
+class RemoteOutput:
+    """Salida remota: compone como una local (master, retardo extra, regla de unirse, logo sí/no) pero en
+    vez de pintar manda el Frame por UDP (net.Sender). El logo es un archivo del receptor."""
+    remote = True
+    full, logo, logo_err = False, "", None
+
+    def __init__(self, app, d):
+        self.name = d["nombre"].strip() or "Salida"
+        self.master = min(max(d["master"], 0.0), 100.0)
+        self.delay_ms = min(max(d["retardo_extra_ms"], 0.0), 200.0)
+        self.content = d["contenido"] if d["contenido"] in CONTENT else LIGHT
+        self.join = d["unirse_a_looks"] if d["unirse_a_looks"] in JOIN else JOIN[0]
+        self.sender, self.warn = None, None
+        self.dest, self.port = d["destino"], int(d["puerto"])
+        self.connect(self.dest, self.port)
+
+    def connect(self, dest, port):
+        """(Re)crea el emisor; un destino o puerto no válido cae a Automático / 47800 con aviso."""
+        dest = dest.strip()
+        self.warn = None
+        if dest.lower() in ("", net.AUTO.lower(), "automatico"):
+            dest = net.AUTO
+        elif not net.valid_ip(dest):
+            self.warn = f"destino {dest!r} no es una IP válida: se usa {net.AUTO}"
+            dest = net.AUTO
+        if not 1 <= port <= 65535:
+            self.warn = (self.warn or "") + f" puerto {port} no válido: se usa {net.PORT}"
+            port = net.PORT
+        if self.sender:
+            self.sender.close()
+        self.dest, self.port = dest, port
+        self.sender = net.Sender(dest, port)
+
+    def snapshot(self):
+        d = default_output(1, ())
+        d.update(nombre=self.name, master=self.master, retardo_extra_ms=self.delay_ms, contenido=self.content,
+                 unirse_a_looks=self.join, tipo="remota", destino=self.dest, puerto=float(self.port))
+        return d
+
+    def render(self, f, now):
+        self.sender.send(f, now)
+
+    def status(self):
+        return self.sender.status()
+
+    def identify(self, n, mons):
+        pass
+
+    def destroy(self):
+        self.sender.close()
+
+
 class Output:
     """Una salida: Toplevel con dos mitades (Frame + bg, nunca Canvas: a 1080p el Canvas cuesta
     ~7 ms por pintado), el logo centrado (Label + PhotoImage) y el rótulo de Identificar."""
+
+    remote = False
 
     def __init__(self, app, d, mons):
         tk = self.tk = app.tk
@@ -134,7 +199,8 @@ class Output:
             self.geo = self.win.geometry()
         return dict(nombre=self.name, monitor=self.device, monitor_rect=self.rect, pantalla_completa=self.full,
                     master=self.master, retardo_extra_ms=self.delay_ms, contenido=self.content, logo=self.logo,
-                    unirse_a_looks=self.join, geo=self.geo)
+                    unirse_a_looks=self.join, geo=self.geo, tipo="local", destino=net.AUTO,
+                    puerto=float(net.PORT))
 
     def hwnd(self):
         return int(self.win.wm_frame(), 16)

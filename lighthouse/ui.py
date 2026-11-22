@@ -6,10 +6,10 @@ import time
 
 import numpy as np
 
-from . import config, outputs, scene, win32
+from . import config, net, outputs, scene, win32
 from .audio import Audio
 from .engine import BLOCK, Engine
-from .outputs import JOIN, LOGO, CONTENT, MAX_OUTPUTS, Output, compose_output
+from .outputs import JOIN, LOGO, CONTENT, MAX_OUTPUTS, compose_output, make_output, remote_output
 from .scene import LOOKS, Cfg, Scene
 
 log = logging.getLogger(__name__)
@@ -276,6 +276,8 @@ class App:
         self.out_add.pack(side="left")
         self.out_del = ttk.Button(row, text="Quitar", command=self.del_output, takefocus=0)
         self.out_del.pack(side="left", padx=6)
+        self.out_tv = ttk.Button(row, text="Agregar TV remota", command=lambda: self.add_output(True), takefocus=0)
+        self.out_tv.pack(side="left")
         row = ttk.Frame(fr); row.pack(fill="x", pady=(4, 0))
         ttk.Button(row, text="Identificar", command=self.identify, takefocus=0).pack(side="left")
         ttk.Button(row, text="Calibrar retardo", command=self.calibrate, takefocus=0).pack(side="left", padx=6)
@@ -283,12 +285,14 @@ class App:
             "En la salida: doble clic = pantalla completa (en el monitor donde está) / ventana; Esc = ventana. "
             "Fuera del look 1 (o en \"siempre\") la salida se une al look y oculta el logo.")).pack(anchor="w",
                                                                                                  pady=(6, 0))
+        self.net_lbl = ttk.Label(fr, text="", foreground="#060", wraplength=300)  # estado de las salidas remotas
+        self.net_lbl.pack(anchor="w", pady=(6, 0))
 
         fr = box("Salida seleccionada", outs[1])
         self.loading = False  # True mientras show_output() carga los campos: no escribir de vuelta
 
-        def field(label):
-            r = ttk.Frame(fr); r.pack(fill="x", pady=2)
+        def field(label, parent=None):
+            r = ttk.Frame(parent or fr); r.pack(fill="x", pady=2)
             ttk.Label(r, text=label, width=15).pack(side="left")
             return r
 
@@ -298,11 +302,22 @@ class App:
         ent.pack(side="left", fill="x", expand=True)
         self.text_entry(ent)
         self.o_name.trace_add("write", lambda *_: self.edit_output("name", self.o_name.get()))
-        self.o_mon = ttk.Combobox(field("Monitor"), state="readonly", width=30, takefocus=0,
+        slot = ttk.Frame(fr)  # monitor y pantalla completa (local) | destino y puerto (remota)
+        slot.pack(fill="x")
+        self.loc_fr, self.rem_fr = ttk.Frame(slot), ttk.Frame(slot)
+        self.o_dest = ttk.Combobox(field("Destino", self.rem_fr), values=[net.AUTO], width=26, takefocus=0)
+        self.o_dest.pack(side="left", fill="x", expand=True)
+        self.text_entry(self.o_dest, self.edit_remote)
+        self.o_dest.bind("<<ComboboxSelected>>", lambda e: self.edit_remote())
+        self.o_port = tk.StringVar()
+        ent = ttk.Entry(field("Puerto", self.rem_fr), textvariable=self.o_port, width=8)
+        ent.pack(side="left")
+        self.text_entry(ent, self.edit_remote)
+        self.o_mon = ttk.Combobox(field("Monitor", self.loc_fr), state="readonly", width=30, takefocus=0,
                                   postcommand=self.list_monitors)
         self.o_mon.pack(side="left", fill="x", expand=True)
         self.o_mon.bind("<<ComboboxSelected>>", lambda e: self.pick_monitor())
-        self.o_full = ttk.Button(field(""), text="Pantalla completa", takefocus=0,
+        self.o_full = ttk.Button(field("", self.loc_fr), text="Pantalla completa", takefocus=0,
                                  command=lambda: self.sel().set_full(not self.sel().full))
         self.o_full.pack(side="left", fill="x", expand=True)
         self.o_master = self.out_slider(fr, "Master (%)", "master", 0, 100)
@@ -310,7 +325,9 @@ class App:
         self.o_content = ttk.Combobox(field("Contenido"), state="readonly", values=CONTENT, width=12, takefocus=0)
         self.o_content.pack(side="left")
         self.o_content.bind("<<ComboboxSelected>>", lambda e: self.edit_output("content", self.o_content.get()))
-        r = field("Logo (PNG)")
+        logo_slot = ttk.Frame(fr)
+        logo_slot.pack(fill="x")
+        r = self.logo_row = field("Logo (PNG)", logo_slot)
         self.o_logo = tk.StringVar()
         ent = ttk.Entry(r, textvariable=self.o_logo, width=22)
         ent.pack(side="left", fill="x", expand=True)
@@ -544,14 +561,14 @@ class App:
 
     @staticmethod
     def out_label(n, o):
-        return f"{n} · {o.name} · " + (f"pantalla completa · {o.mon.device}" if o.full else "ventana")
+        return f"{n} · {o.name} · " + ("remota" if o.remote else f"pantalla completa · {o.mon.device}" if o.full else "ventana")
 
     def set_outputs(self, ds):
         """Crea las salidas desde la config (1..4); cada campo inválido cae a su default."""
         for o in self.outputs:
             o.destroy()
         self.mons = win32.monitors()
-        self.outputs = [Output(self, d, self.mons) for d in ds[:MAX_OUTPUTS]]
+        self.outputs = [make_output(self, d, self.mons) for d in ds[:MAX_OUTPUTS]]
         self.outputs_changed(0)
 
     def outputs_changed(self, select=None):
@@ -561,7 +578,9 @@ class App:
         for n, o in enumerate(self.outputs, 1):
             self.out_list.insert("end", self.out_label(n, o))
         self.out_list.selection_set(i)
-        self.out_add.config(state="normal" if len(self.outputs) < MAX_OUTPUTS else "disabled")
+        full = "normal" if len(self.outputs) < MAX_OUTPUTS else "disabled"
+        self.out_add.config(state=full)
+        self.out_tv.config(state=full)
         self.out_del.config(state="normal" if len(self.outputs) > 1 else "disabled")
         self.show_output()
 
@@ -577,9 +596,15 @@ class App:
         o, self.loading = self.sel(), True
         try:
             self.o_name.set(o.name)
-            self.list_monitors()
-            self.o_mon.set(self.mon_label(o.mon))
-            self.o_full.config(text="Ventana" if o.full else "Pantalla completa")
+            for w, on in ((self.loc_fr, not o.remote), (self.rem_fr, o.remote), (self.logo_row, not o.remote)):
+                w.pack(fill="x", pady=2 if w is self.logo_row else 0) if on else w.pack_forget()
+            if o.remote:
+                self.o_dest.set(o.dest)
+                self.o_port.set(str(o.port))
+            else:
+                self.list_monitors()
+                self.o_mon.set(self.mon_label(o.mon))
+                self.o_full.config(text="Ventana" if o.full else "Pantalla completa")
             self.o_master.set(o.master)
             self.o_delay.set(o.delay_ms)
             self.o_content.set(o.content)
@@ -594,21 +619,34 @@ class App:
         o = self.sel()
         setattr(o, attr, v)
         if attr == "name":
-            o.win.title(f"LightHouse · {v}")
+            if not o.remote:
+                o.win.title(f"LightHouse · {v}")
             i = self.outputs.index(o)
             self.out_list.delete(i)
             self.out_list.insert(i, self.out_label(i + 1, o))
             self.out_list.selection_set(i)
 
+    def edit_remote(self):
+        """Destino y puerto de la salida remota seleccionada (al salir del campo o elegir de la lista)."""
+        o = self.sel()
+        if self.loading or not o.remote:
+            return
+        try:
+            port = int(self.o_port.get())
+        except ValueError:
+            port = 0
+        o.connect(self.o_dest.get(), port)
+        self.show_output()
+
     def pick_monitor(self):
         i = self.o_mon.current()
-        if 0 <= i < len(self.mons):
+        if 0 <= i < len(self.mons) and not self.sel().remote:
             self.sel().set_monitor(self.mons[i])
             self.outputs_changed()
 
     def set_logo(self, path):
         o = self.sel()
-        if path.strip() != o.logo:
+        if not o.remote and path.strip() != o.logo:
             o.set_logo(path)
 
     def browse_logo(self):
@@ -623,12 +661,13 @@ class App:
             self.o_logo.set(p)
             self.set_logo(p)
 
-    def add_output(self):
+    def add_output(self, remote=False):
         if len(self.outputs) < MAX_OUTPUTS:
             self.mons = win32.monitors()
-            used = {o.device for o in self.outputs}
-            self.outputs.append(Output(self, outputs.default_output(len(self.outputs) + 1, self.mons, used),
-                                       self.mons))
+            used = {o.device for o in self.outputs if not o.remote}
+            n = len(self.outputs) + 1
+            self.outputs.append(make_output(self, remote_output(n) if remote else
+                                            outputs.default_output(n, self.mons, used), self.mons))
             self.outputs_changed(len(self.outputs) - 1)
 
     def del_output(self):
@@ -920,6 +959,7 @@ class App:
             "anticipación inactiva (esperando BPM fiable)")
         put(self.no_sig.config, text="SIN SEÑAL" if alive and e.t - e.last_sound > NO_SIGNAL_S else "")
         put(self.clip.config, text="SATURA" if now - self.audio.clip_t < CLIP_S else "")
+        put(self.net_lbl.config, text="\n".join(f"{o.name}: {o.status()}" for o in self.outputs if o.remote))
         put(self.out_warn.config, text="\n".join(
             w for o in self.outputs for w in (f"{o.name}: {o.warn}" if o.warn else "", o.logo_err) if w))
 

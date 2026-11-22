@@ -1,5 +1,6 @@
 """python -m lighthouse          -> app (ventana Control + salidas de video)
 python -m lighthouse --test   -> self-check del motor con señal sintética (exit 0/1)
+python -m lighthouse --pantalla [--puerto N] [--monitor N] [--logo ruta.png]  -> receptor de la TV remota
 """
 import logging
 import logging.handlers
@@ -43,6 +44,10 @@ def main(argv=None):
             return 1
         log.info("self-check ok")
         return 0
+    if "--pantalla" in argv:
+        from . import pantalla
+        install_hooks()
+        return pantalla.main([a for a in argv if a != "--pantalla"])
     log.info("arranque LightHouse %s · Python %s · %s", VERSION, platform.python_version(), platform.platform())
     install_hooks()
     sys.setswitchinterval(0.001)  # el hilo de audio suelta el GIL al render en ≤ 1 ms (default 5 ms)

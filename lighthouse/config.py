@@ -80,9 +80,31 @@ def load(defaults):
     return out  # llaves desconocidas: ignoradas
 
 
-def save(d):
+def _write(d):
     p = path()
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p + ".tmp", "w", encoding="utf-8") as f:
-        json.dump({"version": VERSION, **d}, f, indent=1, ensure_ascii=False)
+        json.dump(d, f, indent=1, ensure_ascii=False)
     os.replace(p + ".tmp", p)  # atómico
+
+
+def _raw():
+    try:
+        with open(path(), encoding="utf-8") as f:
+            raw = json.load(f)
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save(d):
+    keep = {k: v for k, v in _raw().items() if k == "pantalla"}  # la app no pisa la config del modo pantalla
+    _write({"version": VERSION, **keep, **d})
+
+
+def save_key(key, value):
+    """Modo --pantalla: guarda solo su llave y conserva el resto del archivo."""
+    raw = _raw()
+    raw.setdefault("version", VERSION)
+    raw[key] = value
+    _write(raw)

@@ -209,3 +209,52 @@ def selftest():
     assert len(fit) == 1 and fit[0]["nombre"] == "TV" and fit[0]["master"] == 30.0 and fit[0]["logo"] == "", fit
     print("ok: unirse_a_looks (excepto en 1 / siempre / nunca), bump y blackout en todas · sample(0.05) "
           "= 5 bloques · monitor ausente -> primario")
+
+    # --- F6: red
+    import time
+    from . import net
+    from .scene import Frame
+    f = Frame((1, 2, 3), (250, 251, 252), True)
+    pk = net.pack(7, f)
+    assert len(pk) == 14 and net.unpack(pk) == (7, f), pk
+    assert net.unpack(net.pack(0xFFFFFFFF, f._replace(logo_visible=False)))[1].logo_visible is False
+    assert net.unpack(b"XX" + pk[2:]) is None and net.unpack(pk[:-1]) is None
+    flt, t = net.SeqFilter(), 100.0
+    assert flt.accept(10, t) and not flt.accept(10, t) and not flt.accept(9, t) and flt.accept(11, t)
+    assert flt.accept(0xFFFFFFFE, t - 0.1) is False  # 11 -> 0xFFFFFFFE sería un retroceso de 13
+    flt = net.SeqFilter()
+    assert flt.accept(0xFFFFFFFE, t) and flt.accept(0xFFFFFFFF, t) and flt.accept(0, t) and flt.accept(1, t)
+    assert not flt.accept(0xFFFFFFFF, t)  # desbordamiento: 0xFFFFFFFF ya es viejo
+    assert flt.accept(3000, t) and not flt.accept(2900, t) and flt.accept(3001, t)  # reordenado: se descarta
+    flt = net.SeqFilter()
+    assert flt.accept(50000, t)
+    assert not flt.accept(2, t + 0.1) and not flt.accept(3, t + 0.9)  # retrocede > 1000 pero aún no pasa 1 s
+    assert flt.accept(4, t + 1.2) and flt.accept(5, t + 1.3)           # emisor reiniciado
+    flt = net.SeqFilter()
+    assert flt.accept(500, t) and flt.accept(1, t + 5)                 # tras > 1 s sin paquetes, cualquiera
+    print("ok: paquete de 14 bytes · descarte de seq viejo, desbordamiento y emisor reiniciado")
+
+    rx = net.Receiver(0, "127.0.0.1")  # puerto efímero
+    tx = net.Sender("127.0.0.1", rx.port)
+    frames = [Frame((i, 0, 0), (0, i, 0), i % 2 == 0) for i in range(1, 6)]
+    for fr in frames:
+        tx.send(fr, time.perf_counter())
+        time.sleep(0.005)
+    t1 = time.perf_counter() + 1
+    while rx.rx is None or rx.fr != frames[-1]:
+        assert time.perf_counter() < t1, "el receptor no obtuvo el último frame"
+        time.sleep(0.005)
+    n = tx.seq
+    tx.send(frames[-1], tx.t_sent + 0.001)  # sin cambio y antes del keepalive: no manda
+    assert tx.seq == n
+    tx.send(frames[-1], tx.t_sent + net.KEEPALIVE_S + 0.001)  # keepalive
+    assert tx.seq == n + 1
+    assert rx.signal(rx.rx + 0.5) and rx.frame(rx.rx + 0.5) == frames[-1]
+    assert not rx.signal(rx.rx + 1.2)  # timeout: sin señal
+    mid = rx.frame(rx.rx + 1.25)  # a mitad del fundido: la luz a ~la mitad y el logo ya visible
+    assert mid.logo_visible and 0 < mid.left[0] < frames[-1].left[0] + 1, mid
+    assert rx.frame(rx.rx + 1.6) == Frame(BLACK, BLACK, True), rx.frame(rx.rx + 1.6)
+    assert net.Receiver(0, "127.0.0.1").frame(0.0) == Frame(BLACK, BLACK, True)  # nunca llegó nada
+    tx.close()
+    rx.close()
+    print("ok: emisor (127.0.0.1) -> receptor: último frame, keepalive, timeout 1 s -> solo logo sobre negro")

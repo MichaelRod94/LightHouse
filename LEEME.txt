@@ -77,21 +77,66 @@ barra de arriba. Al abrir, siempre arranca en 1 Blanco.
 - Las teclas y los colores de cada look se pueden cambiar en config.json
   (llaves "keys" y "look_colors").
 
-5. DONDE QUEDAN LOS ARCHIVOS
+5. DOS LAPTOPS: TV GRANDE POR RED (PANTALLA REMOTA)
+---------------------------------------------------
+La laptop DJ (rekordbox + LightHouse) manda por red lo que debe mostrar la
+TV; la laptop de visuales corre LightHouse en modo "pantalla" (sin audio) y
+la muestra por HDMI. En el look 1 la TV muestra solo el logo; al elegir otro
+look se une en color con las demas pantallas.
+
+EN LA LAPTOP DJ
+- Pestaña "Salidas" -> "Agregar TV remota". Queda con: Destino "Automatico"
+  (no hay que configurar IPs), puerto 47800, "Unirse a looks: excepto en 1",
+  "Luz + logo" y master 30 %. Debajo de la lista se ve "Enviando por: <IPs>"
+  o "sin red". Con una IP en "Destino" se manda solo a esa laptop.
+
+EN LA LAPTOP DE VISUALES
+- Acceso directo a LightHouse.exe con " --pantalla" al final del campo
+  "Destino" (clic derecho en LightHouse.exe -> Crear acceso directo -> clic
+  derecho al acceso -> Propiedades). Ejemplo:
+      "C:\LightHouse\LightHouse.exe" --pantalla --monitor 2 --logo "C:\logo.png"
+  Opciones: --puerto 47800  --monitor N (1, 2, 3... = DISPLAYn; por defecto el
+  monitor externo, si no el principal)  --logo ruta.png (archivo de ESTA laptop).
+  Se recuerdan en config.json (llave "pantalla"): la proxima vez basta el
+  doble clic. Para cambiar una opcion, vuelve a abrirlo con ella.
+- Abre una ventana sin bordes a pantalla completa, sin cursor y sin dormirse.
+  Durante 3 s muestra en una esquina "LightHouse pantalla · IP"; despues nunca
+  muestra texto. Sin señal (mas de 1 s sin paquetes) se apaga con un fundido
+  de 0.5 s y queda solo el logo sobre negro (sin logo: negro).
+- Esc cierra, con confirmacion: la primera vez muestra "Esc otra vez para
+  cerrar" 3 s; un segundo Esc en ese tiempo cierra.
+- El orden de arranque da igual: la pantalla muestra el logo hasta que llega
+  señal.
+
+FIREWALL (laptop de visuales)
+- La primera vez Windows pregunta: permite el acceso en redes PRIVADAS.
+- Alternativa (PowerShell como administrador):
+      netsh advfirewall firewall add rule name="LightHouse" dir=in action=allow protocol=UDP localport=47800
+
+COMO CONECTAR LAS DOS LAPTOPS (nunca uses el Wi-Fi del lugar)
+  A) CABLE (recomendada): cable Ethernet entre las dos laptops (adaptador
+     USB-C / USB 3.0 a Ethernet si no tienen puerto). No configures IPs:
+     Windows asigna direcciones 169.254.* solas en unos 30 s.
+  B) HOTSPOT PROPIO: en la laptop de visuales, Configuracion -> Red e
+     Internet -> Zona con cobertura inalambrica movil; usa la banda de
+     5 GHz si existe. La laptop DJ se conecta a esa red.
+- Si se cae la red y vuelve, el envio se recupera solo (en menos de 5 s).
+
+6. DONDE QUEDAN LOS ARCHIVOS
 ----------------------------
 - Configuracion: %APPDATA%\LightHouse\config.json
 - Registros (logs): %LOCALAPPDATA%\LightHouse\logs
   (pega esas rutas en el Explorador de archivos). Si algo falla, manda el
   archivo lighthouse.log.
 
-6. CHECKLIST DE SHOW
+7. CHECKLIST DE SHOW
 --------------------
 1. LightHouse en la laptop DJ: el medidor se mueve con rekordbox. Las teclas
    responden con LightHouse al frente.
 2. Modo Juego en todas las TV y retardo calibrado por pantalla.
 3. Laptops con corriente; sin suspension, notificaciones ni actualizaciones.
-4. Red entre laptops por cable o hotspot propio. La TV muestra el logo si se
-   desconecta.
+4. Red entre laptops por cable o hotspot propio (seccion 5). La TV muestra el
+   logo si se desconecta.
 5. Probar cada look, el blackout, el bump y soltar la tecla.
 6. Bajar la musica: la luz cae a calma, no se congela.
 7. Si falla el loopback: respaldo booth -> Y -> UR12 (+48V apagado). Si falla
