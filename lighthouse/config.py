@@ -50,6 +50,17 @@ def log_dir():
     return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "LightHouse", "logs")
 
 
+def shown(p):
+    """Ruta para la UI con %APPDATA% / %LOCALAPPDATA% en vez del perfil: el largo no depende del usuario
+    (una ruta larga hacía crecer la tarjeta Ayuda más allá del alto de compacto)."""
+    hits = [(len(b), v) for v in ("APPDATA", "LOCALAPPDATA")
+            if (b := os.environ.get(v)) and p.lower().startswith(b.lower())]
+    if not hits:
+        return p
+    n, v = max(hits)
+    return f"%{v}%{p[n:]}"
+
+
 def _fit(v, d):
     """v con el tipo de d (bool/int/float/str/list de str/dict de esos/list de dict), o None si no encaja.
     dict: solo las llaves de d; cada una que no encaje conserva su default.

@@ -1018,7 +1018,7 @@ class App:
         ttk.Label(f, text=f"LightHouse {VERSION}", style="State.TLabel").pack(anchor="w")
         for title, path in (("Configuración", config.path()), ("Registros (lighthouse.log)", config.log_dir())):
             ttk.Label(f, text=title, style="Muted.TLabel").pack(anchor="w", pady=(S("md"), 0))
-            ttk.Label(f, text=path, wraplength=self.px(TEXT_W)).pack(anchor="w")
+            ttk.Label(f, text=config.shown(path), wraplength=self.px(TEXT_W)).pack(anchor="w")
         r = ttk.Frame(f)  # los dos botones en una fila: con Tema, la tarjeta sigue cabiendo en compacto (480)
         r.pack(fill="x", pady=(S("md"), 0))
         self.reg(ttk.Button(r, text="Ver tutorial", command=self.tut_start, takefocus=0),

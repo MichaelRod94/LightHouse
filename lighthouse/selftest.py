@@ -1,5 +1,6 @@
 """Self-check del motor con señal sintética: python -m lighthouse --test"""
 import os
+import tempfile
 
 import numpy as np
 
@@ -969,6 +970,20 @@ def check_tema():
 
 
 def selftest():
+    """Todo el self-check con un %APPDATA% temporal y vacío: el resultado no depende de la config ni del
+    perfil de quien lo corre (en una PC nueva o con una ruta de perfil larga debe dar lo mismo)."""
+    from . import config
+    old = os.environ.get("APPDATA")
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["APPDATA"] = d
+        try:
+            assert config.shown(config.path()) == os.path.join("%APPDATA%", "LightHouse", "config.json")
+            _selftest()
+        finally:
+            os.environ.pop("APPDATA") if old is None else os.environ.update(APPDATA=old)
+
+
+def _selftest():
     check_filtro_scipy()
     sr, spb = 48000, 0.5  # 120 BPM
     rng = np.random.default_rng(0)
