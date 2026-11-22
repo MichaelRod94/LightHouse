@@ -1,6 +1,6 @@
 """GUI: ventana Control (barra de looks, franja En vivo, pestañas Show / Audio / Salidas / Ayuda con tarjetas
-y layout responsive completo / medio / compacto) + salidas de video, looks por teclado, presets, watchdog de
-silencio, reconexión, calibración de sincronía y config."""
+y layout responsive completo / medio / compacto / Mini junto a rekordbox) + salidas de video, looks por
+teclado, presets, watchdog de silencio, reconexión, calibración de sincronía y config."""
 import logging
 import math
 import os
@@ -34,10 +34,10 @@ RESPONSE = {"Normal": dict(min_gap=250, flash_limit_hz=6, decay=250, vmin=8, sen
 KEYS = {**{str(i): [str(i), f"NUMPAD{i}"] for i in range(1, 8)}, **{c: [c] for c in "QWERTYUZ"},
         "blackout": ["SPACE"], "bump": ["F"], "auto": ["F1"], "pulso": ["F2"], "tranquilo": ["F3"],
         "manual": ["F4"], "tap": ["0", "NUMPAD0"], "sens+": ["OEM_PLUS", "ADD"],
-        "sens-": ["OEM_MINUS", "SUBTRACT"]}
+        "sens-": ["OEM_MINUS", "SUBTRACT"], "mini": ["F9"]}
 ACTION_NAMES = {"blackout": "Blackout", "bump": "Bump (mantener)", "auto": "Modo Auto", "pulso": "Modo Pulso",
                 "tranquilo": "Modo Tranquilo", "manual": "Modo Manual", "tap": "Marcar el ritmo",
-                "sens+": "Más sensibilidad", "sens-": "Menos sensibilidad"}
+                "sens+": "Más sensibilidad", "sens-": "Menos sensibilidad", "mini": "Vista Mini / volver"}
 KEY_NAMES = {"SPACE": "Espacio", "OEM_PLUS": "+", "OEM_MINUS": "−", "ADD": "Num +", "SUBTRACT": "Num −"}
 # nombre corto de cada look para su botón (el largo, de scene.LOOKS, va en "Look 2 · Rojo")
 LOOK_SHORT = {"1": "Blanco", "2": "Rojo", "3": "Azul", "4": "Morado", "5": "Verde", "6": "Amar.", "7": "Arco",
@@ -58,7 +58,7 @@ MODE_LABELS = [f"F{i} {m.capitalize()}" for i, m in enumerate(MODES, 1)]  # segm
 MODE_SHORT = [m.capitalize() for m in MODES]  # lista desplegable (densa, ahorra ancho)
 COLOR_MODES = ["Blanco", "Temperatura", "Paleta (cambia en cada flash)"]
 TABS = {"show": "Show", "audio": "Audio", "salidas": "Salidas", "ayuda": "Ayuda"}  # id -> etiqueta
-VISTAS = {"auto": "Automática", "compacto": "Compacta"}  # "mini" (F9) se acepta en config: en F8 = compacto
+VISTAS = {"auto": "Automática", "compacto": "Compacta", "mini": "Mini"}
 STATES = ("BLACKOUT", "BUMP", "AUTO · TRANQUILO", "AUTO · PULSO", "PULSO", "TRANQUILO", "MANUAL")
 AUTO_PREFIX = "AUTO · "  # en densa no se muestra: el modo ya está en la lista desplegable
 BPM_MANUAL = {False: " (manual)", True: " (man.)"}  # sufijo del BPM manual (cómoda / densa)
@@ -70,9 +70,14 @@ CALIB_WHERE = ("Adelantar / atrasar la luz: pestaña Show → Luz. Retraso de ca
                "destello 50 ms y modo Pulso.")
 MIC_HINT = ("Revisa Configuración → Privacidad → Micrófono → "
             "Permitir que las aplicaciones de escritorio accedan")
+NOFOCUS_NOTE = ("En la vista Mini, un clic en un look o en Blackout no le quita el teclado al programa que "
+                "está al frente (rekordbox). Un clic en la línea de estado sí trae LightHouse al frente.")
+KEYS_TEXTS = ("Teclas: activas", "Teclas: en otra ventana", "Teclas: siempre activas", "Teclas: en pausa")
 RETRY_S, NO_SIGNAL_S, CLIP_S = 3.0, 3.0, 0.5
 # medidas en px lógicos (pasan por px())
 METER_W, METER_W_NARROW, METER_W_DENSE = 240, 120, 70  # cómoda (1 fila de looks / 2 filas) y densa
+METER_W_MINI = 56
+MINI_SIZE = (800, 80)                      # geometría mini por defecto (contenido de la tira)
 SWATCH_W, SLIDER_W = 110, 190
 METER_Y = (4, 24, 32, 52, 28, 56)          # medidor: barra de nivel, barra de golpe y línea de umbral (y0, y1)
 METER_Y_DENSE = (2, 12, 15, 25, 14, 27)
@@ -114,6 +119,14 @@ def keys_chip(fg, global_keys, paused):
     if global_keys:
         return "Teclas: siempre activas", "warn"
     return ("Teclas: activas", "ok") if fg else ("Teclas: en otra ventana", "fg_muted")
+
+
+def state_text(st, dense, mini):
+    """Estado del modo en la franja: en densa sin "AUTO · " (el modo ya está en su lista); en Mini no hay
+    lista de Modo: va entero y en corto, tras el look ("· AUTO·PULSO")."""
+    if mini:
+        return "· " + st.replace(" · ", "·")
+    return st.replace(AUTO_PREFIX, "") if dense else st
 
 
 def key_label(name):
@@ -173,6 +186,12 @@ class App:
         self.layout = self.draw = self.live_n = None  # Layout elegido, Layout dibujado y filas de la franja
         self.live_drawn = None
         self.vista = "auto"
+        self.vista_prev = "auto"    # vista a la que vuelven Ampliar y F9 al salir de Mini
+        self.geo_normal = None      # (geometría, maximizada) de la última ventana no mini
+        self.geo_mini = ""          # ui.geo_mini
+        self.topmost = self.noact = False  # siempre encima y "No quitar el teclado" aplicados ahora
+        self.geo_req = ""           # última geometría pedida por fit_geometry (ver cur_geo)
+        self.state_fits = True      # Mini bloque: el estado del modo solo si cabe
         self.jobs = {}
         self.sb_on = False
         self.t_layout = 0.0         # ms de la última recolocación
@@ -199,6 +218,7 @@ class App:
         root.rowconfigure(3, weight=1)
         self.build_looks()
         self.build_live()
+        self.bar.lift(self.live)  # en Mini la barra de looks se empaca dentro de la franja: debe quedar encima
         self.build_tabs()
         self.build_body()
         self.build_show()
@@ -226,8 +246,11 @@ class App:
                 o.win.withdraw()
             return
         geo, zoom = self.initial_geometry(cfg["geo_control"])
-        root.geometry(geo)
         self.geo["geo_control"] = geo
+        if self.vista == "mini":  # se cerró en Mini: arranca en Mini, con su geometría
+            self.geo_normal = (geo, zoom)
+            geo, zoom = self.mini_geometry(geo), False
+        root.geometry(geo)
         g = re.match(r"^(\d+)x(\d+)", geo)
         self.relayout(int(g[1]) / self.scale, int(g[2]) / self.scale, force=True)
         root.bind_class("Tk", "<Configure>", self.on_root_configure)  # solo la raíz, no sus hijos
@@ -239,6 +262,8 @@ class App:
             root.state("zoomed")
         root.update()  # mapea las ventanas ya; luego Control queda por encima de la Salida 1 en ventana
         root.lift()
+        if self.vista == "mini":
+            self.mini_window(True)
         self.slow()
         self.autosave()
 
@@ -307,11 +332,19 @@ class App:
                     activeforeground="danger_fg" if on else "danger_text", selectcolor="danger",
                     highlightbackground="danger", highlightcolor="focus", font="font.title")
 
-    def style_bump(self, on):
-        """Bump: activo (acento) mientras se mantiene, con el ratón o con la tecla F."""
-        theme.paint(self.bump_btn, bg="accent" if on else "surface_alt", fg="accent_fg" if on else "fg",
+    def style_bump(self, on, btn=None):
+        """Bump: activo (acento) mientras se mantiene, con el ratón o con la tecla F (btn: Ampliar del mini,
+        mismo aspecto, nunca activo)."""
+        theme.paint(btn or self.bump_btn, bg="accent" if on else "surface_alt", fg="accent_fg" if on else "fg",
                     activebackground="accent" if on else "hover", activeforeground="accent_fg" if on else "fg",
                     highlightbackground="surface", highlightcolor="focus", font="font.title")
+
+    def style_top(self):
+        """Siempre encima (interruptor del mini): encendido = fondo de acento, como el look activo."""
+        on = self.mini_top.get()
+        theme.paint(self.top_btn, bg="accent" if on else "surface_alt", fg="accent_fg" if on else "fg",
+                    activebackground="accent" if on else "hover", activeforeground="accent_fg" if on else "fg",
+                    selectcolor="accent", highlightbackground="surface", highlightcolor="focus", font="font.title")
 
     # --- zona A: barra de looks
     def build_looks(self):
@@ -330,8 +363,10 @@ class App:
         self.look_var.trace_add("write", lambda *_: self.style_looks())
         self.style_looks()
 
-    def look_text(self, lid, dense):
+    def look_text(self, lid, dense, mini=False):
         k = self.keys[lid][0]
+        if mini:  # 15 × 44 px: solo la tecla (el nombre del activo va en la línea de estado)
+            return k
         if dense:
             return f"{k} {LOOK_SHORT[lid]}" if lid in LOOK_NAMED_DENSE else k
         return f"{k}\n{LOOK_SHORT[lid]}"
@@ -347,7 +382,7 @@ class App:
             sw = self.look_sw[lid]
             sw.configure(height=self.px(SWATCH_H_DENSE if dense else SWATCH_H))
             sw.grid(row=2 * r, column=c, sticky="ew", padx=self.sp("xs"))
-            self.look_btns[lid].configure(text=self.look_text(lid, dense))
+            self.look_btns[lid].configure(text=self.look_text(lid, dense, lay.mode == "mini"))
             self.look_btns[lid].grid(row=2 * r + 1, column=c, sticky="nsew")
         for c in range(len(LOOKS)):
             on = c < per
@@ -411,7 +446,8 @@ class App:
         self.vista_cb = self.reg(ttk.Combobox(self.vista_fr, state="readonly", values=list(VISTAS.values()),
                                               takefocus=0, width=max(map(len, VISTAS.values()))), "vista.selector")
         self.vista_cb.pack(side="right")
-        self.vista_cb.bind("<<ComboboxSelected>>", lambda e: self.set_vista(list(VISTAS)[self.vista_cb.current()]))
+        self.vista_cb.bind("<<ComboboxSelected>>",
+                           lambda e: self.choose_vista(list(VISTAS)[self.vista_cb.current()]))
         self.bump_btn = self.reg(tk.Button(lv, text="Bump", takefocus=0, bd=1, padx=S("lg"), pady=S("xs"),
                                            highlightthickness=S("xs")), "bump")
         self.bump_btn.bind("<ButtonPress-1>", lambda e: self.set_bump_mouse(True))
@@ -424,8 +460,22 @@ class App:
             command=lambda: setattr(self.scene, "blackout", self.bo.get())), "blackout")
         self.bo.trace_add("write", lambda *_: self.style_blackout())
         self.style_blackout()
+        # vista Mini: Siempre encima (interruptor) y Ampliar (sale de Mini); solo se empacan en Mini
+        self.mini_top = tk.BooleanVar(value=True)
+        self.top_btn = self.reg(tk.Checkbutton(
+            lv, text="Encima", variable=self.mini_top, indicatoron=False, takefocus=0, padx=S("sm"),
+            pady=S("xs"), bd=1, highlightthickness=S("xs"), command=self.set_mini_top), "vista.fijar")
+        self.mini_top.trace_add("write", lambda *_: self.style_top())
+        self.style_top()
+        self.ampliar_btn = self.reg(tk.Button(lv, text="Ampliar", takefocus=0, bd=1, padx=S("sm"), pady=0,
+                                              highlightthickness=S("xs"), command=self.ampliar), "vista.ampliar")
+        self.style_bump(False, self.ampliar_btn)
+        # línea de estado (zona segura): un clic trae LightHouse al frente y no cambia nada
+        for w in (self.look_lbl, self.state, self.no_sig, self.clip, self.audio_chip):
+            w.bind("<Button-1>", self.to_front)
         self.live_items = [self.dot, self.bpm, self.meter, self.look_lbl, self.state, self.prev, self.chips,
-                           self.mode_seg, self.mode_cb, self.vista_fr, self.bump_btn, self.bo_btn]
+                           self.mode_seg, self.mode_cb, self.vista_fr, self.bump_btn, self.bo_btn, self.top_btn,
+                           self.ampliar_btn, self.bar]
         self.pack_chips()
         self.style_segments(self.mode)
 
@@ -437,27 +487,48 @@ class App:
     def layout_live(self, lay, rows):
         """Cómoda: 3 filas (señal y look · estado y avisos · Modo, Vista, Bump y Blackout). Densa: 1 fila
         (ancho >= 1100) o 2 (arriba punto, BPM, medidor, look, vista previa y Blackout; abajo estado, avisos,
-        Modo, Bump y Vista). Blackout va a la derecha y se empaca primero: si falta ancho, nunca se recorta."""
-        S, d, dense = self.sp, self, lay.dense
+        Modo, Bump y Vista). Blackout va a la derecha y se empaca primero: si falta ancho, nunca se recorta.
+        Mini (fases/diseno-ui.md §3.5): la barra de looks entra en la franja. Tira: looks + Blackout; abajo
+        punto, BPM, medidor, línea de estado, vista previa, Encima y Ampliar. Bloque: punto, BPM, medidor,
+        vista previa, Blackout, Encima y Ampliar; looks en 2 filas; línea de estado. La línea de estado se
+        empaca la última: es lo que se recorta si falta sitio."""
+        S, d, dense, mini = self.sp, self, lay.dense, lay.mode == "mini"
         for w in self.live_items:
             w.pack_forget()
         for r in self.live_fr:
             r.pack_forget()
         big = "Live.TLabel" if dense else "Big.TLabel"
         font = "font.title" if dense else "font.big"
-        self.bpm.configure(style=big, width=self.fit_chars(font, ("-- BPM", "200 BPM" + BPM_MANUAL[dense])))
-        looks = [f"Look {self.keys[lid][0]} · {name}" for lid, (name, *_) in LOOKS.items()]
-        self.look_lbl.configure(style=big, width=self.fit_chars(font, looks))
-        self.state.configure(width=self.fit_chars("font.title", [s.replace(AUTO_PREFIX, "") if dense else s
-                                                                  for s in STATES]))
-        self.mw = self.px(METER_W_DENSE if dense else METER_W if lay.look_rows == 1 else METER_W_NARROW)
+        if mini:  # BPM solo con el número; look y estado a su ancho natural (nada a su derecha que salte)
+            self.bpm.configure(style=big, width=self.fit_chars(font, ("--", "200")))
+            self.look_lbl.configure(style="Mini.TLabel", width=0)
+            self.state.configure(style="Mini.TLabel", width=0)
+        else:
+            self.bpm.configure(style=big, width=self.fit_chars(font, ("-- BPM", "200 BPM" + BPM_MANUAL[dense])))
+            looks = [f"Look {self.keys[lid][0]} · {name}" for lid, (name, *_) in LOOKS.items()]
+            self.look_lbl.configure(style=big, width=self.fit_chars(font, looks))
+            self.state.configure(style="State.TLabel", width=self.fit_chars(
+                "font.title", [state_text(s, dense, False) for s in STATES]))
+        for c in (self.no_sig, self.clip, self.audio_chip):  # alarmas: más chicas en la línea del mini
+            theme.paint(c, font="font.small" if mini else "font.title")
+        self.mw = self.px(METER_W_MINI if mini else METER_W_DENSE if dense else
+                          METER_W if lay.look_rows == 1 else METER_W_NARROW)
         self.my = tuple(self.px(v) for v in (METER_Y_DENSE if dense else METER_Y))
         self.meter.configure(width=self.mw, height=self.my[5])
+        self.live.configure(padding=(S("xs"), S("xs")) if mini else (S("md"), S("sm")))
+        # Blackout: en Mini 96 px de ancho (15 × 44 + 96 = la tira de 760) y >= 32 de alto
+        self.bo_btn.configure(padx=S("sm" if mini else "md"), pady=S("sm" if mini else "xs"))
         if dense:
             self.vista_lbl.pack_forget()
         else:
             self.vista_lbl.pack(side="left", padx=(0, S("sm")))
-        if not dense:
+        if mini and lay.look_rows == 1:  # tira
+            spec = [([d.bar], [d.bo_btn]),
+                    ([d.dot, d.bpm, d.meter, d.look_lbl, d.state, d.chips], [d.ampliar_btn, d.top_btn, d.prev])]
+        elif mini:  # bloque
+            spec = [([d.dot, d.bpm, d.meter, d.prev], [d.ampliar_btn, d.top_btn, d.bo_btn]), ([d.bar], []),
+                    ([d.look_lbl, d.state, d.chips], [])]
+        elif not dense:
             spec = [([d.dot, d.bpm, d.meter, d.look_lbl, d.prev], []), ([d.state, d.chips], []),
                     ([d.mode_seg], [d.bo_btn, d.bump_btn, d.vista_fr])]
         elif rows == 1:
@@ -469,27 +540,45 @@ class App:
         gap = S("sm") if dense else S("md")
         for i, (left, right) in enumerate(spec):
             row = self.live_fr[i]
-            row.pack(fill="x", pady=(S("sm") if i else 0, 0))
+            row.pack(fill="x", pady=(S("xs" if mini else "sm") if i else 0, 0))
             for w in right:  # primero: pack recorta a los últimos empacados
-                w.pack(in_=row, side="right", padx=(gap, 0))
+                tira_bo = mini and d.bar in left  # pegado a los looks y de su alto
+                w.pack(in_=row, side="right", padx=(0 if tira_bo else gap, 0), fill="y" if tira_bo else "none")
             for w in left:
-                w.pack(in_=row, side="left", padx=(0, gap))
+                if w is d.bar:  # la barra de looks ocupa lo que queda de su fila
+                    w.pack(in_=row, side="left", fill="x", expand=True)
+                else:  # en Mini el último de la línea de estado no deja hueco a su derecha
+                    w.pack(in_=row, side="left", padx=(0, 0 if mini and w is d.chips else gap))
+        if not mini:
+            self.bar.grid(row=0, column=0, columnspan=2, sticky="ew")
         i, left = next((i, left) for i, (left, _) in enumerate(spec) if d.state in left)
         self.state_at = (self.live_fr[i], left[left.index(d.state) + 1])  # fila y vecino (para volver a ponerlo)
         self.pack_chips()
 
+    def mini_state_fits(self, w):
+        """Mini bloque: ¿cabe el estado del modo junto al look y el aviso Teclas, en el peor caso? (w en px
+        lógicos). La tira siempre tiene sitio."""
+        fl, fs = (self.tkfont.Font(root=self.root, font=theme.tok(t)) for t in ("font.look", "font.small"))
+        look = max(fl.measure(f"Look {self.keys[lid][0]} · {name}") for lid, (name, *_) in LOOKS.items())
+        state = max(fl.measure(state_text(s, True, True)) for s in STATES)
+        keys = max(fs.measure(t) for t in KEYS_TEXTS) + 2 * self.px(6)  # padx del chip
+        return look + state + keys + 3 * self.sp("sm") <= self.px(w) - 2 * self.sp("xs")  # 3 separaciones
+
     def pack_chips(self):
         """Los avisos vacíos no ocupan lugar: se empacan solo los visibles, siempre en el mismo orden.
-        En densa, una alarma (SIN SEÑAL, SATURA, audio) ocupa el lugar del estado del modo."""
+        En densa, una alarma (SIN SEÑAL, SATURA, audio) ocupa el lugar del estado del modo. En Mini solo van
+        las alarmas (en el lugar del estado) y Teclas; el estado del bloque, solo si cabe."""
+        alarms = (self.no_sig, self.clip, self.audio_chip)
+        mini = self.draw is not None and self.draw.mode == "mini"
         for c in self.chip_list:
             c.pack_forget()
-        for c in self.chip_list:
+        for c in ([*alarms, self.keys_chip] if mini else self.chip_list):
             if self.chip_vis[c] or c is self.keys_chip:
                 c.pack(side="left", padx=(0, self.sp("sm")))
         if self.draw is None:
             return
-        alarm = any(self.chip_vis[c] for c in (self.no_sig, self.clip, self.audio_chip))
-        if self.draw.dense and alarm:
+        alarm = any(self.chip_vis[c] for c in alarms)
+        if (self.draw.dense and alarm) or (mini and not self.state_fits):
             self.state.pack_forget()
         elif not self.state.winfo_manager():
             row, nxt = self.state_at
@@ -574,7 +663,7 @@ class App:
         for cid, keys in ADV_KEYS.items():
             dirty = any(s[k] != d[k] for k in keys)
             if cid == "teclado":
-                dirty = s["ui"]["tab_nav"] != d["ui"]["tab_nav"]
+                dirty = any(s["ui"][k] != d["ui"][k] for k in ("tab_nav", "mini_sin_foco"))
             elif cid == "salida_sel":
                 dirty = bool(o) and (o.delay_ms != 0 or (o.remote and o.port != net.PORT))
             if dirty != self.adv_dirty[cid]:
@@ -671,6 +760,10 @@ class App:
         self.note(a, "Tab recorre los controles; mientras uno tiene el foco, las teclas de show quedan en "
                      "pausa. Esc las devuelve.")
         self.tab_nav.trace_add("write", lambda *_: self.set_tab_nav())
+        self.mini_nofocus = tk.BooleanVar(value=False)  # ui.mini_sin_foco (se aplica al entrar a Mini)
+        self.reg(ttk.Checkbutton(a, text="No quitar el teclado en Mini (experimental)", variable=self.mini_nofocus,
+                                 takefocus=0), "vista.sin_foco").pack(anchor="w", pady=(S("sm"), 0))
+        self.note(a, NOFOCUS_NOTE)
 
     # --- pestaña Audio
     def build_audio(self):
@@ -851,7 +944,7 @@ class App:
                 LOOKS[a][0] if a in LOOKS else ACTION_NAMES[a] for a in part)).grid(row=0, column=2 * col + 1,
                                                                                      sticky="nw")
             self.key_cols.append((k, part))
-        self.note(f, KEYS_NOTE).pack_configure(pady=(S("md"), 0))
+        self.note(f, KEYS_NOTE).pack_configure(pady=(S("sm"), 0))  # sm: con F9 (fila 13) cabe en compacto
 
         f = self.card("ayuda", "Ayuda")
         ttk.Label(f, text=f"LightHouse {VERSION}", style="State.TLabel").pack(anchor="w")
@@ -879,13 +972,17 @@ class App:
     def relayout(self, w=None, h=None, force=False):
         """Elige el layout para el tamaño (px lógicos; sin argumentos, el de la ventana) y recoloca solo si
         cambió. Los widgets nunca se destruyen ni se recrean."""
-        if w is None:
+        win = w is None
+        if win:
             w, h = self.root.winfo_width() / self.scale, self.root.winfo_height() / self.scale
             if w < 50 or h < 20:  # minimizada o aún sin mapear
                 return
         lay = layout.pick(w, h, self.vista, self.layout)
         rows = layout.live_rows(w, lay.dense, self.live_n)
-        if force or (lay, rows) != (self.layout, self.live_n):
+        if win and lay.mode != "mini":  # la ventana normal a la que vuelven Ampliar y F9
+            self.geo_normal = (self.root.geometry(), self.root.state() == "zoomed")
+        fits = self.mini_state_fits(w) if lay.mode == "mini" and lay.look_rows == 2 else True
+        if force or (lay, rows, fits) != (self.layout, self.live_n, self.state_fits):
             t0 = time.perf_counter()
             self.apply_layout(lay, rows, w)
             self.t_layout = (time.perf_counter() - t0) * 1000
@@ -893,18 +990,37 @@ class App:
                      lay.mode, self.draw.cols, lay.look_rows, rows, w, h, self.t_layout)
 
     def apply_layout(self, lay, rows, w):
-        """Recoloca solo las zonas cuyos parámetros cambiaron (looks, franja, tarjetas)."""
+        """Recoloca solo las zonas cuyos parámetros cambiaron (looks, franja, tarjetas). Mini: sin pestañas ni
+        tarjetas (grid_remove: no se destruyen)."""
         self.layout, self.live_n = lay, rows
-        old = self.draw
-        # F8: un resultado mini se dibuja como compacto (la vista Mini propia es F9)
-        new = self.draw = lay._replace(mode="compacto", cols=layout.cols_for(w)) if lay.mode == "mini" else lay
-        if old is None or (old.look_rows, old.dense) != (new.look_rows, new.dense):
+        old, new = self.draw, lay
+        self.draw = new
+        mini, was = new.mode == "mini", old is not None and old.mode == "mini"
+        fits = self.mini_state_fits(w) if mini and new.look_rows == 2 else True
+        if old is None or mini != was:
+            self.show_full(not mini)
+            if was:
+                self.mini_window(False)  # al salir de Mini (también agrandándola a mano) deja de estar encima
+        if old is None or (old.look_rows, old.dense, was) != (new.look_rows, new.dense, mini):
             self.layout_looks(new)
-        if old is None or (old.look_rows, old.dense, self.live_drawn) != (new.look_rows, new.dense, rows):
+        if old is None or (old.look_rows, old.dense, was, self.live_drawn, self.state_fits) != (
+                new.look_rows, new.dense, mini, rows, fits):
+            self.state_fits = fits
             self.layout_live(new, rows)
             self.live_drawn = rows
         if old is None or old.cols != new.cols:
             self.place_cards()
+
+    def show_full(self, on):
+        """Pestañas y cuerpo de tarjetas; en Mini se quitan con grid_remove y el título es corto."""
+        if on:
+            self.tabbar.grid()
+            self.body_cv.grid()  # la barra de desplazamiento la decide on_body_view
+        else:
+            for w in (self.tabbar, self.body_cv, self.body_sb):
+                w.grid_remove()
+            self.sb_on = False
+        self.root.title("LightHouse · Control" if on else "LightHouse")
 
     def place_cards(self):
         """Tarjetas de la pestaña activa en sus columnas (layout.plan); las de otras pestañas, grid_remove."""
@@ -941,7 +1057,8 @@ class App:
             cv.itemconfigure(self.body_win, width=e.width)
         bh, h = self.body.winfo_reqheight(), cv.winfo_height()
         cv.configure(scrollregion=(0, 0, cv.winfo_width(), bh))
-        need = bool(self.root.winfo_viewable()) and bh > h + 1
+        mini = self.draw is not None and self.draw.mode == "mini"
+        need = not mini and bool(self.root.winfo_viewable()) and bh > h + 1
         if need != self.sb_on:
             self.sb_on = need
             if need:
@@ -999,14 +1116,154 @@ class App:
         return f"{w}x{h}{pos}", False
 
     def set_vista(self, v):
-        """Vista: auto (por tamaño) | compacto | mini (F9; en F8 se dibuja como compacto). Inválida -> auto."""
+        """Vista guardada (ui.vista): auto (por tamaño) | compacto | mini. Inválida -> auto. Solo fija la vista
+        y recoloca; entrar y salir de Mini con su geometría es enter_mini / leave_mini."""
         if v not in layout.FORCED:
             log.warning("config: ui.vista=%r no es válida; se usa 'auto'", v)
             v = "auto"
         self.vista = v
-        self.vista_cb.set(VISTAS.get(v, "Mini"))
+        if v != "mini":
+            self.vista_prev = v
+        self.vista_cb.set(VISTAS[v])
         if self.layout is not None and self.root.winfo_viewable():
             self.relayout(force=True)
+
+    def choose_vista(self, v):
+        """Selector Vista: Mini entra a Mini a mano; Automática o Compacta salen de Mini si hace falta."""
+        if v == "mini":
+            self.enter_mini()
+        elif self.vista == "mini":
+            self.leave_mini(v)
+        else:
+            self.set_vista(v)
+
+    # --- vista Mini (fases/diseno-ui.md §3.3 y §3.5)
+    def win_center(self, geo=None):
+        """Centro (px físicos) de una geometría 'WxH+X+Y' o, sin ella, de la ventana."""
+        g = outputs.GEO_RE.match(geo or "")
+        if g:
+            return int(g[3][1:]) + int(g[1]) // 2, int(g[4][1:]) + int(g[2]) // 2
+        r = self.root
+        return r.winfo_rootx() + r.winfo_width() // 2, r.winfo_rooty() + r.winfo_height() // 2
+
+    def mini_geometry(self, ref=None):
+        """ui.geo_mini si es válida en los monitores actuales; si no, la tira (800 × 80 lógicos de contenido)
+        arriba a la derecha del área de trabajo del monitor donde está Control (ref: su geometría)."""
+        g = self.geo_mini
+        if outputs.GEO_RE.match(g) and outputs.geo_ok(g, win32.monitors()):
+            return g
+        if g:
+            log.warning("config: ui.geo_mini=%r no es válida o cae fuera de los monitores", g)
+        w, h = (self.px(v) for v in MINI_SIZE)
+        wa = win32.work_area(*self.win_center(ref)) or (0, 0, w, h)
+        return f"{w}x{h}+{wa[0] + wa[2] - w - self.px(FRAME_EXTRA[0])}+{wa[1]}"
+
+    def cur_geo(self):
+        """Geometría actual. Sin ventana (headless) Tk no aplica el tamaño a una ventana que nunca se mapeó:
+        vale la última pedida."""
+        return self.geo_req if self.headless and self.geo_req else self.root.geometry()
+
+    def fit_geometry(self, geo):
+        """Pone la geometría y recoloca ya con su tamaño (sin esperar al Configure; también sin ventana), sin
+        histéresis: al volver de Mini el layout es el mismo que antes de entrar."""
+        self.geo_req = geo
+        self.root.geometry(geo)
+        g = re.match(r"^(\d+)x(\d+)", geo)
+        self.layout = self.live_n = None
+        self.relayout(int(g[1]) / self.scale, int(g[2]) / self.scale, force=True)
+        if not self.headless:  # aplicada ya: -topmost (SetWindowPos) antes del idle conservaría la posición vieja
+            self.root.update_idletasks()
+
+    def default_geometry(self):
+        """Tamaño por defecto de F8 (el que pide completo) en el monitor de la ventana, lo más cerca posible de
+        donde estaba sin salirse de su área de trabajo."""
+        wa = win32.work_area(*self.win_center())
+        geo, zoom = self.initial_geometry(f"+{wa[0]}+{wa[1]}" if wa else "")
+        g = outputs.GEO_RE.match(geo)
+        if g and not zoom:
+            w, h = int(g[1]), int(g[2])
+            fw, fh = (self.px(v) for v in FRAME_EXTRA)
+            x = min(max(self.root.winfo_rootx(), wa[0]), wa[0] + wa[2] - w - fw)
+            y = min(max(self.root.winfo_rooty(), wa[1]), wa[1] + wa[3] - h - fh)
+            geo = f"{w}x{h}+{x}+{y}"
+        return geo, zoom
+
+    def mini_size(self, geo):
+        """¿Una ventana de esa geometría se dibujaría como mini (con la vista actual)?"""
+        g = re.match(r"^(\d+)x(\d+)", geo)
+        return layout.pick(int(g[1]) / self.scale, int(g[2]) / self.scale, self.vista).mode == "mini"
+
+    def enter_mini(self):
+        """Mini a mano (Vista → Mini o F9): guarda la geometría normal, toma ui.geo_mini (o la tira por
+        defecto) y, con "Siempre encima" activo, se fija encima."""
+        if self.vista == "mini":
+            return
+        root, ref = self.root, self.cur_geo()
+        if self.draw is None or self.draw.mode != "mini":  # ventana normal: a esta geometría se vuelve
+            self.geo_normal = (ref, root.state() == "zoomed")
+        if self.geo_normal:
+            self.geo["geo_control"] = self.geo_normal[0]
+        if root.state() == "zoomed":
+            root.state("normal")
+        self.vista_prev, self.vista = self.vista, "mini"
+        self.vista_cb.set(VISTAS["mini"])
+        self.fit_geometry(self.mini_geometry(ref))
+        self.mini_window(True)
+        log.info("vista Mini: %s (siempre encima: %s)", self.geo_req, self.topmost)
+
+    def leave_mini(self, vista=None):
+        """Sale de Mini (Ampliar, F9 o Vista), también si entró sola por tamaño: guarda ui.geo_mini, vuelve a
+        la última geometría normal (o al tamaño por defecto) y deja de estar encima. Nunca "no hace nada"."""
+        root = self.root
+        if self.vista == "mini":
+            if root.state() != "zoomed":
+                self.geo_mini = self.cur_geo()
+            self.vista = vista or self.vista_prev
+        elif vista:
+            self.vista = vista
+        self.vista_cb.set(VISTAS[self.vista])
+        self.mini_window(False)
+        geo, zoom = self.geo_normal or ("", False)
+        if not (outputs.GEO_RE.match(geo) and outputs.geo_ok(geo, win32.monitors()) and not self.mini_size(geo)):
+            geo, zoom = self.default_geometry()
+        if root.state() == "zoomed":
+            root.state("normal")
+        self.fit_geometry(geo)
+        if zoom and not self.headless:
+            root.state("zoomed")
+        self.geo["geo_control"] = geo
+        log.info("sale de Mini: vista %s, %s", self.vista, geo)
+
+    def ampliar(self):
+        """Botón Ampliar: sale de Mini; con "No quitar el teclado" además trae LightHouse al frente."""
+        noact = self.noact
+        self.leave_mini()
+        if noact and not self.headless:
+            self.to_front()
+
+    def toggle_mini(self):
+        """Tecla F9: alterna Mini ↔ vista anterior. Si se ve como mini (aunque haya entrado sola), sale."""
+        if self.draw is not None and self.draw.mode == "mini":
+            self.ampliar()
+        else:
+            self.enter_mini()
+
+    def set_mini_top(self):
+        """Interruptor Siempre encima (ui.mini_encima): si la ventana está en Mini, se aplica ya."""
+        if self.draw is not None and self.draw.mode == "mini":
+            self.mini_window(True)
+
+    def mini_window(self, on):
+        """on (en Mini): siempre encima y "No quitar el teclado" según sus opciones. off: se quitan siempre."""
+        top = on and self.mini_top.get()
+        if top != self.topmost:  # -topmost la pone arriba de todo, también de una salida a pantalla completa
+            self.topmost = top
+            self.root.attributes("-topmost", top)
+        no = on and self.mini_nofocus.get()
+        if no != self.noact:
+            self.noact = no
+            if not self.headless:
+                win32.set_no_activate(int(self.root.wm_frame(), 16), no)
 
     # --- teclado y foco
     def set_tab_nav(self):
@@ -1119,9 +1376,9 @@ class App:
             for vk in vks:
                 self.vk_actions.setdefault(vk, []).append(act)
         self.bump_vks = tuple(vk for vk, acts in self.vk_actions.items() if "bump" in acts)
-        dense = bool(self.draw and self.draw.dense)
+        dense, mini = bool(self.draw and self.draw.dense), bool(self.draw and self.draw.mode == "mini")
         for lid, b in self.look_btns.items():
-            b.config(text=self.look_text(lid, dense))
+            b.config(text=self.look_text(lid, dense, mini))
         for lb, part in self.key_cols:  # tabla de atajos (pestaña Ayuda), del mapa real
             lb.config(text="\n".join(" · ".join(key_label(n) for n in self.keys[a]) for a in part))
 
@@ -1168,6 +1425,8 @@ class App:
             self.tap()
         elif act in ("sens+", "sens-"):
             self.nudge("sens", 0.1 if act == "sens+" else -0.1)
+        elif act == "mini":
+            self.toggle_mini()
 
     def poll_keys(self):
         """Teclas por GetAsyncKeyState: llegan aunque el foco de Tk esté en otra ventana de la app.
@@ -1447,8 +1706,13 @@ class App:
                  outputs=[o.snapshot() for o in self.outputs],
                  ui={"theme": self.theme_name, "vista": self.vista, "tab": self.tab_var.get(),
                      "avanzado": dict(self.adv_open), "tab_nav": self.tab_nav.get()})
-        if self.root.winfo_viewable():
-            self.geo["geo_control"] = self.root.geometry()
+        if self.root.winfo_viewable():  # en Mini (a mano) la ventana es la mini; geo_control, la normal
+            if self.vista != "mini":
+                self.geo["geo_control"] = self.root.geometry()
+            elif self.root.state() != "zoomed":
+                self.geo_mini = self.root.geometry()
+        s["ui"].update(geo_mini=self.geo_mini, mini_encima=self.mini_top.get(),
+                       mini_sin_foco=self.mini_nofocus.get())
         s.update(self.geo)
         return s
 
@@ -1504,7 +1768,11 @@ class App:
         self.set_outputs(c["outputs"])
 
     def apply_ui(self, u):
-        """Preferencias de interfaz (ui): vista, pestaña, "Avanzado" abiertos y Navegar con Tab."""
+        """Preferencias de interfaz (ui): vista, pestaña, "Avanzado" abiertos, Navegar con Tab y las del mini
+        (geometría, siempre encima, no quitar el teclado; se aplican al entrar a Mini)."""
+        self.geo_mini = u["geo_mini"]
+        self.mini_top.set(u["mini_encima"])
+        self.mini_nofocus.set(u["mini_sin_foco"])
         self.set_vista(u["vista"])
         if u["tab"] not in TABS:
             log.warning("config: ui.tab=%r no es válida; se usa 'show'", u["tab"])
@@ -1682,14 +1950,15 @@ class App:
         x = round(w * min(e.thresh, 1))
         put(self.meter.coords, self.line, x, y[4], x, y[5])
         put(self.dot.itemconfig, self.dot_id, fill=theme.tok("beat_on" if e.t - e.last_beat < 0.1 else "beat_off"))
-        dense = self.draw.dense
+        dense, mini = self.draw.dense, self.draw.mode == "mini"
+        unit = "" if mini else " BPM"  # en Mini, solo el número
         if e.sync == "tempo" and e.bpm_src == "manual":
-            put(self.bpm.config, text=f"{e.bpm_manual:.0f} BPM" + BPM_MANUAL[dense])
+            put(self.bpm.config, text=f"{e.bpm_manual:.0f}" + ("" if mini else " BPM" + BPM_MANUAL[dense]))
         else:
-            put(self.bpm.config, text=f"{e.bpm:.0f} BPM" if e.bpm and e.t - e.last_beat < 2 else "-- BPM")
+            put(self.bpm.config, text=(f"{e.bpm:.0f}" if e.bpm and e.t - e.last_beat < 2 else "--") + unit)
         st = ("BLACKOUT" if sc.blackout else "BUMP" if sc.bump else e.mode.upper() if e.mode != "auto" else
               AUTO_PREFIX + ("TRANQUILO" if e.calm else "PULSO"))
-        put(self.state.config, text=st.replace(AUTO_PREFIX, "") if dense else st)
+        put(self.state.config, text=state_text(st, dense, mini))
         put(self.look_lbl.config, text=f"Look {self.keys[sc.look][0]} · {LOOKS[sc.look][0]}")
         self.note_set(self.lead, "" if e.offset >= 0 else "anticipación activa" if e.lead() else
                       "anticipación inactiva (requiere Al ritmo)" if e.sync != "tempo" else

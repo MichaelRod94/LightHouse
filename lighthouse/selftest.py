@@ -61,10 +61,9 @@ def check_sin_colores_sueltos():
     print("ok: ui.py y layout.py sin literales de color (salvo PALETTE y KELVIN)")
 
 
-# ids del catálogo (fases/diseno-ui.md §5.4) que existen desde F8. Faltan a propósito los de F9 (vista.fijar,
-# vista.ampliar, vista.sin_foco), F10–F14 (ayuda.tutorial, ayuda.tips, ayuda.intro, ayuda.tema, tut.*) y
-# calib.salir (se crea al abrir Calibrar sincronía).
-CATALOG_F8 = {
+# ids del catálogo (fases/diseno-ui.md §5.4) que existen desde F9. Faltan a propósito los de F10–F14
+# (ayuda.tutorial, ayuda.tips, ayuda.intro, ayuda.tema, tut.*) y calib.salir (se crea al abrir Calibrar sincronía).
+CATALOG = {
     *(f"look.{k}" for k in "1234567QWERTYUZ"),
     "vivo.punto", "vivo.medidor", "vivo.bpm", "vivo.look", "vivo.estado", "vivo.previa", "vivo.teclas",
     "vivo.sin_senal", "vivo.satura", "vivo.red", "vivo.avisos", "modo.auto", "modo.pulso", "modo.tranquilo",
@@ -80,7 +79,7 @@ CATALOG_F8 = {
     "calma.preset", "calma.espera", "calma.suavidad", "calma.base", "calma.respira", "salidas.lista",
     "salidas.agregar", "salidas.quitar", "salidas.tv", "salidas.identificar", "salidas.calibrar", "sal.nombre",
     "sal.monitor", "sal.completa", "sal.destino", "sal.puerto", "sal.master", "sal.retardo", "sal.contenido",
-    "sal.logo", "sal.logo_buscar", "sal.unirse", "ayuda.carpeta"}
+    "sal.logo", "sal.logo_buscar", "sal.unirse", "ayuda.carpeta", "vista.fijar", "vista.ampliar", "vista.sin_foco"}
 
 
 def check_layout():
@@ -110,7 +109,15 @@ def check_layout():
             assert len(set(cells)) == len(cells), (tab, cols, p)
             n += 1
     assert plan(pick(820, 90), "show") == []
-    print(f"ok: layout.pick (9 casos de §3.2, forzado), histéresis 24 px, layout.plan ({n} pestaña × columnas)")
+    # F9 1: mini tira (1 fila) / bloque (2 filas); forzado; la tira pasa a bloque justo bajo 760 (los looks y
+    # Blackout no caben) y el bloque espera a 760 + 24 para volver a tira
+    tira, bloque, forced = pick(820, 90), pick(400, 150), pick(1366, 700, forced="mini")
+    assert (tira.mode, tira.look_rows, bloque.mode, bloque.look_rows) == ("mini", 1, "mini", 2), (tira, bloque)
+    assert (forced.mode, forced.cols, forced.look_rows) == ("mini", 0, 1), forced
+    assert pick(759, 90, prev=tira).look_rows == 2 and pick(760, 90, prev=tira).look_rows == 1
+    assert pick(780, 90, prev=bloque).look_rows == 2 and pick(790, 90, prev=bloque).look_rows == 1
+    print(f"ok: layout.pick (9 casos de §3.2, forzado; mini tira/bloque), histéresis 24 px, layout.plan "
+          f"({n} pestaña × columnas)")
 
 
 def check_teclas():
@@ -144,8 +151,10 @@ def check_tamanos():
     Con los avisos de la franja en su caso más ancho habitual (Teclas: en otra ventana · TV: enviando).
     Compacto de 1 columna: el límite de 420 es el del cuerpo de tarjetas; la ventana entera debe caber en la
     de referencia (700). Tolerancia de 1 px por el redondeo de px() a escala no entera."""
-    from . import layout
-    from .ui import App
+    from tkinter import font as tkfont
+    from . import layout, theme
+    from .scene import LOOKS
+    from .ui import STATES, App, state_text
     out = []
     for scaling, pct in ((96 / 72, 100), (2.0, 150)):
         app = App(headless=True, scaling=scaling)
@@ -166,16 +175,144 @@ def check_tamanos():
                     big = [max(a, b) for a, b in zip(big, (rw, rh, bw))]
                 out.append(f"{name} {pct} %: {big[0]:.0f}×{big[1]:.0f}" + (f" (cuerpo {big[2]:.0f})" if cols == 1
                                                                             else ""))
+            # F9 2: vista Mini, con los textos más anchos de su línea de estado, sin alarma y con la más larga
+            fl = tkfont.Font(root=app.root, font=theme.tok("font.look"))
+            app.look_lbl.config(text=max((f"Look {app.keys[k][0]} · {v[0]}" for k, v in LOOKS.items()),
+                                         key=fl.measure))
+            app.state.config(text=max((state_text(s, True, True) for s in STATES), key=fl.measure))
+            for name, w, h, rows, (mw, mh) in MINI_SIZES:
+                big = [0, 0]
+                for alarm in ("", "ERROR DE AUDIO"):
+                    app.chip_set(app.audio_chip, alarm)
+                    rw, rh, _ = app.measure(w, h, "show", forced="mini")
+                    assert (app.draw.mode, app.draw.look_rows) == ("mini", rows), (name, app.draw)
+                    assert rw <= mw + 1 and rh <= mh + 1, f"{name} {pct} % {alarm}: {rw:.0f}×{rh:.0f} > {mw}×{mh}"
+                    big = [max(a, b) for a, b in zip(big, (rw, rh))]
+                out.append(f"{name} {pct} %: {big[0]:.0f}×{big[1]:.0f}")
+            app.chip_set(app.audio_chip, "")
         finally:
             app.quit()
-    print("ok: tamaños pedidos (máx. de las 4 pestañas): " + " · ".join(out))
+    print("ok: tamaños pedidos (máx. de las 4 pestañas; mini con y sin alarma): " + " · ".join(out))
+
+
+MINI_SIZES = (("mini tira", 820, 90, 1, (800, 80)), ("mini bloque", 400, 150, 2, (400, 140)))  # F9, §3.5
+
+
+def check_mini():
+    """F9 3–5: en Mini siguen visibles los looks, Blackout, señal y sus botones (y nada más); ida y vuelta de
+    la geometría y de siempre encima (a mano, con F9 y sola por tamaño); acción mini -> F9 en el mapa de teclas."""
+    from . import win32
+    from .ui import KEYS, App
+    app = App(headless=True, scaling=96 / 72)  # 100 %: `tk scaling` sigue en el proceso tras check_tamanos
+    try:
+        by_id = {i: w for w, i in app.ids.items()}
+
+        def shown(w):  # gestionado por pack/grid hasta la raíz (sin ventana no hay winfo_ismapped)
+            while w is not app.root:
+                m = w.winfo_manager()
+                if m not in ("pack", "grid"):
+                    return bool(m)  # "" = quitado; "canvas" = dentro del cuerpo de tarjetas
+                w = (w.pack_info() if m == "pack" else w.grid_info())["in"]
+            return True
+        app.chip_set(app.net_chip, "TV: enviando", "ok")  # en Mini no se muestra
+        want = [f"look.{k}" for k in "1234567QWERTYUZ"] + ["blackout", "vivo.punto", "vivo.bpm", "vivo.medidor",
+                                                           "vivo.previa", "vivo.look", "vivo.teclas",
+                                                           "vista.fijar", "vista.ampliar"]
+        gone = ["tab.show", "modo.auto", "modo.selector", "bump", "vista.selector", "resp.preset", "vivo.red"]
+        for w, h, rows in ((820, 90, 1), (400, 150, 2)):
+            app.measure(w, h, "show", forced="mini")
+            assert app.draw.look_rows == rows and app.root.title() == "LightHouse", (app.draw, app.root.title())
+            hidden = [i for i in want if not shown(by_id[i])]
+            visible = [i for i in gone if shown(by_id[i])]
+            assert not hidden and not visible, (rows, hidden, visible)
+            assert not app.tabbar.winfo_manager() and not app.body_cv.winfo_manager()
+            assert all(app.look_btns[k].cget("text") == app.keys[k][0] for k in app.look_btns)  # solo la tecla
+        app.measure(1366, 700, "show")
+        assert shown(app.tabbar) and shown(by_id["tab.show"]) and not shown(by_id["vista.ampliar"])
+        assert app.root.title() == "LightHouse · Control"
+        print(f"ok: Mini (tira y bloque): {len(want)} controles visibles (15 looks, Blackout, señal, Encima, "
+              "Ampliar); pestañas, tarjetas, Modo, Bump y Vista ocultos (no destruidos)")
+
+        # ida y vuelta: a mano (F9 simulada con win32.key_down / app_in_foreground) y con Ampliar
+        top = lambda: bool(int(app.root.attributes("-topmost")))
+        app.fit_geometry("1100x650+120+80")
+        g0 = app.cur_geo()
+        f9, down, front = win32.vk_code("F9"), set(), [True]
+        saved = win32.key_down, win32.app_in_foreground
+        win32.key_down, win32.app_in_foreground = (lambda vk: vk in down), (lambda: front[0])
+
+        def press(vk):
+            app.poll_keys()
+            down.add(vk)
+            app.poll_keys()
+            down.discard(vk)
+            app.poll_keys()
+        try:
+            press(f9)
+            gm = app.cur_geo()
+            assert app.vista == "mini" and app.draw.mode == "mini" and top() and app.topmost, (app.vista, gm)
+            assert gm != g0 and app.draw.look_rows == 1, gm  # tira por defecto (sin ui.geo_mini)
+            press(f9)
+            got = (app.cur_geo(), app.vista, app.draw.mode, top())
+            assert got == (g0, "auto", "medio", False), got
+            assert app.snapshot()["ui"]["geo_mini"] == gm  # se recuerda la geometría mini
+            front[0] = False  # con otra ventana al frente F9 no hace nada
+            press(f9)
+            assert app.vista == "auto" and app.cur_geo() == g0
+        finally:
+            win32.key_down, win32.app_in_foreground = saved
+        app.set_vista("compacto")
+        app.mini_top.set(False)
+        app.choose_vista("mini")  # selector Vista -> Mini, sin siempre encima
+        assert app.cur_geo() == gm and app.draw.mode == "mini" and not top()
+        app.mini_top.set(True)
+        app.set_mini_top()  # el interruptor se aplica ya en Mini
+        assert top()
+        app.ampliar()
+        assert (app.cur_geo(), app.vista, top()) == (g0, "compacto", False), (app.cur_geo(), app.vista)
+        # sola por tamaño (vista auto): no cambia siempre encima; Ampliar deja una ventana que ya no es mini
+        app.set_vista("auto")
+        app.fit_geometry("400x150+120+80")
+        assert app.draw.mode == "mini" and app.vista == "auto" and not top()
+        app.ampliar()
+        assert app.draw.mode != "mini" and app.cur_geo() == g0, (app.draw, app.cur_geo())
+        app.fit_geometry("500x200+120+80")
+        app.geo_normal = None  # sin geometría normal conocida: el tamaño por defecto
+        app.toggle_mini()
+        assert app.draw.mode != "mini" and app.vista == "auto" and not top(), (app.draw, app.cur_geo())
+        print(f"ok: Mini ida y vuelta: F9, selector y Ampliar vuelven a {g0} exacta y sin siempre encima; "
+              f"sola por tamaño, Ampliar -> {app.draw.mode} ({app.cur_geo()})")
+
+        # mapa de teclas: mini -> F9 por defecto; una config guardada sin esa acción la recibe por default
+        assert KEYS["mini"] == ["F9"] and app.vk_actions[win32.vk_code("F9")] == ["mini"]
+        defaults = app.snapshot()
+        raw = dict(defaults, keys={a: v for a, v in defaults["keys"].items() if a != "mini"})
+        assert load_cfg(raw, defaults)["keys"]["mini"] == ["F9"]
+        print("ok: tecla F9 = acción mini (default; config sin ella -> F9)")
+    finally:
+        app.quit()
+
+
+def load_cfg(raw, defaults):
+    """config.load(defaults) de un config.json con raw, en un %APPDATA% temporal (no toca el real)."""
+    import json
+    import tempfile
+    from . import config
+    old = os.environ.get("APPDATA")
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["APPDATA"] = d
+        try:
+            os.makedirs(os.path.dirname(config.path()))
+            with open(config.path(), "w", encoding="utf-8") as f:
+                json.dump(raw, f)
+            return config.load(defaults)
+        finally:
+            os.environ.pop("APPDATA") if old is None else os.environ.update(APPDATA=old)
 
 
 def check_interfaz():
-    """App(headless=True): ids de todos los controles (y del catálogo de F8), config v4/v5 -> v6, preferencias
+    """App(headless=True): ids de todos los controles (y del catálogo de F9), config v4/v5 -> v6, preferencias
     de interfaz y repintado al cambiar de tema."""
-    import json
-    import tempfile
     import time
     from . import config, theme
     from .ui import App
@@ -205,25 +342,15 @@ def check_interfaz():
         assert not app.root.winfo_viewable() and all(not o.win.winfo_viewable() for o in app.outputs)
         assert dt < 3, f"la interfaz sin ventana tardó {dt:.1f} s"
         reg = set(app.ids.values())
-        lost = CATALOG_F8 - reg
+        lost = CATALOG - reg
         assert not lost, f"ids del catálogo sin control: {sorted(lost)}"
-        extra = sorted(reg - CATALOG_F8)
-        print(f"ok: interfaz sin ventana: {len(ids)} controles con id, sin repetidos; catálogo de F8 completo "
-              f"({len(CATALOG_F8)} ids; fuera del catálogo: {', '.join(extra)}) ({dt:.2f} s)")
+        extra = sorted(reg - CATALOG)
+        print(f"ok: interfaz sin ventana: {len(ids)} controles con id, sin repetidos; catálogo de F9 completo "
+              f"({len(CATALOG)} ids; fuera del catálogo: {', '.join(extra)}) ({dt:.2f} s)")
 
         # config v4 y v5 guardadas -> v6, sin perder ninguna otra llave; v5: geo_control conserva la posición
-        defaults, old = app.snapshot(), os.environ.get("APPDATA")
-
-        def load(raw):
-            with tempfile.TemporaryDirectory() as d:
-                os.environ["APPDATA"] = d
-                try:
-                    os.makedirs(os.path.dirname(config.path()))
-                    with open(config.path(), "w", encoding="utf-8") as f:
-                        json.dump(raw, f)
-                    return config.load(defaults)
-                finally:
-                    os.environ.pop("APPDATA") if old is None else os.environ.update(APPDATA=old)
+        defaults = app.snapshot()
+        load = lambda raw: load_cfg(raw, defaults)
         v4 = {k: v for k, v in defaults.items() if k != "ui"}
         v4.update(version=4, decay=321.0, global_keys=True)
         out = load(v4)
@@ -238,8 +365,8 @@ def check_interfaz():
         assert load(dict(v5, geo_control="basura"))["geo_control"] == ""
         app.set_vista("xyz")
         assert app.vista == "auto" and app.vista_cb.get() == "Automática"
-        app.set_vista("mini")  # F9: se acepta (en F8 se dibuja como compacto)
-        assert app.vista == "mini"
+        app.set_vista("mini")  # se acepta (entrar a Mini con su geometría es enter_mini: check_mini)
+        assert app.vista == "mini" and app.vista_cb.get() == "Mini"
         # preferencias de interfaz: vista, pestaña, "Avanzado" abiertos y Navegar con Tab van y vuelven
         app.set_vista("compacto")
         app.tab_var.set("audio")
@@ -551,3 +678,5 @@ def selftest():
     check_layout()
     check_teclas()
     check_tamanos()
+    # --- F9: vista Mini (tamaños en check_tamanos; F9 1 en check_layout)
+    check_mini()

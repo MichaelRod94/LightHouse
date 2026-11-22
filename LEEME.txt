@@ -35,9 +35,10 @@ De arriba a abajo:
   baja o ventana chica: botones de una linea, Modo como lista). Si las
   tarjetas no caben, el cuerpo se desplaza con la rueda del mouse (la rueda
   nunca cambia un valor).
-- "Vista": Automatica (por tamaño) o Compacta (siempre compacta).
-- Se recuerdan al cerrar: tamaño y posicion de la ventana, Vista, pestaña y
-  que "Avanzado" estaban abiertos.
+- "Vista": Automatica (por tamaño), Compacta (siempre compacta) o Mini
+  (seccion 3, tambien con F9).
+- Se recuerdan al cerrar: tamaño y posicion de la ventana (y los del mini),
+  Vista, pestaña y que "Avanzado" estaban abiertos.
 
 3. LAPTOP DJ CON REKORDBOX (lo normal)
 --------------------------------------
@@ -47,6 +48,29 @@ De arriba a abajo:
 - Pon musica en rekordbox y confirma que el medidor (franja En vivo) se mueve.
 - "Fuente de audio" -> Avanzado: deja activada "Dar prioridad a rekordbox":
   asi rekordbox siempre tiene prioridad sobre LightHouse.
+
+JUNTO A REKORDBOX (VISTA MINI)
+- F9 (con LightHouse al frente) o "Vista" -> Mini: la ventana queda en una
+  tira arriba a la derecha con los 15 looks, Blackout, la señal (punto, BPM
+  y medidor), la vista previa y una linea de estado. Si la haces angosta,
+  los looks pasan a dos filas (bloque). Muevela y cambia su tamaño como
+  quieras: se recuerda.
+- "Encima" (activo por defecto): el mini queda siempre por encima de
+  rekordbox. "Ampliar" o F9 vuelven a la ventana grande, al mismo lugar.
+- Si achicas la ventana a mano tambien se ve como mini (sin ponerse
+  encima); al agrandarla vuelve sola.
+- Si cierras LightHouse en Mini, vuelve a abrir en Mini, en el mismo sitio.
+- Aviso "Teclas" de la linea de estado:
+  * "en otra ventana" (gris): lo normal con rekordbox al frente; tus teclas
+    van a rekordbox, no a LightHouse. Cambia de look con el mouse.
+  * "activas" (verde): las teclas de show llegan a LightHouse. Un clic en
+    la linea de estado trae LightHouse al frente sin cambiar nada.
+  * "siempre activas" (naranja): "Teclas siempre activas" esta encendida.
+    OJO: 1-7, Q, W, Z... llegan a LightHouse Y TAMBIEN a rekordbox.
+  * "en pausa" (naranja): estas escribiendo en un campo.
+- Experimental: pestaña Show -> "Teclado" -> Avanzado -> "No quitar el
+  teclado en Mini": un clic en un look o en Blackout cambia la luz sin
+  quitarle el teclado a rekordbox.
 
 4. RESPALDO CON LA UR12
 -----------------------
@@ -93,6 +117,7 @@ La lista completa de teclas esta en la pestaña Ayuda -> "Atajos".
 - 0 (o el 0 del numerico): "Marcar el ritmo", toca al ritmo 3 o mas veces
   (antes T)
 - + / - (tambien los del numerico): sensibilidad +/- 0.1 (de 1.0 a 3.0)
+- F9: vista Mini / volver a la ventana grande (seccion 3)
 - Pestaña Show:
   * "Respuesta": "Muy reactivo" = golpes mas cortos y rapidos (drops);
     "Normal" vuelve a los valores de siempre. "Sensibilidad" y "Limitar

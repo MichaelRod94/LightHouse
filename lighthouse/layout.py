@@ -26,7 +26,7 @@ CARDS = {
 class Layout(NamedTuple):
     mode: str        # "completo" | "medio" | "compacto" | "mini"
     cols: int        # columnas de tarjetas (0 en mini)
-    look_rows: int   # 1 o 2
+    look_rows: int   # 1 o 2 (en mini: 1 = tira, 2 = bloque)
     dense: bool
 
 
@@ -65,8 +65,10 @@ def pick(w, h, forced="auto", prev=None):
         mode = "completo"
     dense = mode in ("mini", "compacto")
     same = prev is not None and prev.dense == dense
-    rows = 2 if _below(w, LOOKS_1ROW_DENSE if dense else LOOKS_1ROW,
-                       (prev.look_rows == 2) if same else None) else 1
+    two = (prev.look_rows == 2) if same else None
+    if mode == "mini" and two is False:  # tira: los 15 looks + Blackout no caben bajo 760; pasa a bloque ahí
+        two = None
+    rows = 2 if _below(w, LOOKS_1ROW_DENSE if dense else LOOKS_1ROW, two) else 1
     cols = 0 if mode == "mini" else cols_for(w, prev.cols if prev else None)
     return Layout(mode, cols, rows, dense)
 

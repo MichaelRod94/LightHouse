@@ -27,6 +27,8 @@ def _migrate(raw):
         # así que solo se conserva la posición ("+X+Y") y el tamaño lo pone el default
         g = _SIZED.match(raw["geo_control"])
         raw["geo_control"] = g[1] if g else ""
+    # F9 (sin subir la versión): ui.geo_mini, ui.mini_encima, ui.mini_sin_foco y keys.mini son llaves nuevas
+    # que ponen los defaults; ui.vista ya aceptaba "mini"
     if v < VERSION:
         log.info("config migrada de v%s a v%d", v, VERSION)
 

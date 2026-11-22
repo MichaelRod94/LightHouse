@@ -192,7 +192,7 @@ def _styles(root, t):
     from tkinter import ttk
     s = ttk.Style(root)
     s.theme_use(t["ttk.base"])
-    body, small, title, big = t["font.body"], t["font.small"], t["font.title"], t["font.big"]
+    body, small, title, big, look = t["font.body"], t["font.small"], t["font.title"], t["font.big"], t["font.look"]
     b = dict(background=t["surface"], foreground=t["fg"], bordercolor=t["border"], darkcolor=t["surface"],
              lightcolor=t["surface"], troughcolor=t["trough"], focuscolor=t["focus"], insertcolor=t["fg"],
              fieldbackground=t["surface_alt"], selectbackground=t["accent"], selectforeground=t["accent_fg"],
@@ -208,9 +208,11 @@ def _styles(root, t):
                                ("Warn.TLabel", "surface", "warn", body), ("Ok.TLabel", "surface", "ok", body),
                                ("Big.TLabel", "surface", "live_fg", big), ("State.TLabel", "surface", "fg", title),
                                ("Live.TLabel", "surface", "live_fg", title),
+                               ("Mini.TLabel", "surface", "live_fg", look),  # línea de estado del mini
                                ("Legend.TLabel", "bg", "fg_muted", small), ("BgWarn.TLabel", "bg", "warn", body),
                                ("BgMuted.TLabel", "bg", "fg_muted", body)):
         s.configure(name, background=t[bg], foreground=t[fg], font=font)
+    s.configure("Mini.TLabel", padding=0, borderwidth=0)  # ancho = el del texto (ui.mini_state_fits, exacto)
     # tarjetas
     s.configure("TLabelframe", background=t["surface"], bordercolor=t["border"], lightcolor=t["border"],
                 darkcolor=t["border"], relief="solid", borderwidth=1)

@@ -1,4 +1,5 @@
-"""Todo el ctypes del proyecto (Windows): prioridad, teclado, DPI, monitores, keep-awake y rectángulos."""
+"""Todo el ctypes del proyecto (Windows): prioridad, teclado, DPI, monitores, keep-awake, rectángulos y estilo
+"no activar" (vista Mini)."""
 import ctypes
 import logging
 import os
@@ -29,6 +30,14 @@ _u32.EnumDisplayMonitors.argtypes = (wintypes.HDC, ctypes.c_void_p, _MONITORENUM
 _u32.EnumDisplayMonitors.restype = wintypes.BOOL
 _u32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
 _u32.GetWindowRect.restype = wintypes.BOOL
+# estilo extendido de la ventana (64 bits: *LongPtrW; 32 bits: *LongW)
+_GET_LONG = getattr(_u32, "GetWindowLongPtrW", _u32.GetWindowLongW)
+_SET_LONG = getattr(_u32, "SetWindowLongPtrW", _u32.SetWindowLongW)
+_GET_LONG.argtypes = (wintypes.HWND, ctypes.c_int)
+_GET_LONG.restype = ctypes.c_ssize_t
+_SET_LONG.argtypes = (wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t)
+_SET_LONG.restype = ctypes.c_ssize_t
+GWL_EXSTYLE, WS_EX_NOACTIVATE = -20, 0x08000000
 _PID = os.getpid()
 
 
@@ -166,6 +175,29 @@ def set_caption_color(hwnd, bg, fg) -> bool:
         return _dwm_set(hwnd, 35, ref(bg)) & _dwm_set(hwnd, 36, ref(fg))
     except (ValueError, TypeError):
         return False
+
+
+def set_no_activate(hwnd, on) -> bool:
+    """Pone o quita WS_EX_NOACTIVATE: un clic en la ventana no la trae al frente (el teclado se queda en el
+    programa que estaba al frente). Se puede activar igual con SetForegroundWindow (focus -force de Tk)."""
+    ctypes.set_last_error(0)
+    s = _GET_LONG(hwnd, GWL_EXSTYLE)
+    if not s and ctypes.get_last_error():
+        log.warning("GetWindowLongPtrW falló (error %d)", ctypes.get_last_error())
+        return False
+    new = s | WS_EX_NOACTIVATE if on else s & ~WS_EX_NOACTIVATE
+    if new == s:
+        return True
+    ctypes.set_last_error(0)
+    ok = bool(_SET_LONG(hwnd, GWL_EXSTYLE, new)) or not ctypes.get_last_error()
+    if not ok:
+        log.warning("SetWindowLongPtrW falló (error %d)", ctypes.get_last_error())
+    return ok
+
+
+def no_activate(hwnd) -> bool:
+    """¿La ventana tiene WS_EX_NOACTIVATE? (para verificarlo)."""
+    return bool(_GET_LONG(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE)
 
 
 def window_rect(hwnd):
