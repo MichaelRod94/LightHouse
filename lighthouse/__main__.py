@@ -41,9 +41,11 @@ def main(argv=None):
             traceback.print_exc()
             log.exception("self-check falló")
             return 1
+        log.info("self-check ok")
         return 0
     log.info("arranque LightHouse %s · Python %s · %s", VERSION, platform.python_version(), platform.platform())
     install_hooks()
+    sys.setswitchinterval(0.001)  # el hilo de audio suelta el GIL al render en ≤ 1 ms (default 5 ms)
     from .ui import App
     App().root.mainloop()
     return 0

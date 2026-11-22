@@ -1,0 +1,71 @@
+﻿LIGHTHOUSE - GUIA RAPIDA
+========================
+
+LightHouse escucha la musica y la convierte en luz. No necesitas instalar nada.
+
+1. ANTES DE ABRIR
+-----------------
+- Antes de descomprimir: clic derecho al archivo ZIP -> Propiedades -> marca
+  "Desbloquear" -> Aceptar. Despues descomprime la carpeta completa
+  (clic derecho -> Extraer todo).
+- Abre LightHouse.exe con doble clic.
+- Si Windows muestra "SmartScreen": clic en "Mas informacion" y luego en
+  "Ejecutar de todas formas". Es normal: el programa no esta firmado.
+- Microfono: Configuracion de Windows -> Privacidad y seguridad -> Microfono ->
+  activa "Permitir que las aplicaciones de escritorio accedan al microfono".
+  Es necesario para usar la entrada de la interfaz UR12.
+
+2. LAPTOP DJ CON REKORDBOX (lo normal)
+--------------------------------------
+- En la lista de dispositivos elige "Salida (loopback) · <dispositivo que usa rekordbox>"
+  (el mismo que elegiste en rekordbox: Preferencias -> Audio).
+- Pon musica en rekordbox y confirma que el medidor se mueve.
+- Deja activada la casilla "Prioridad baja (laptop DJ)": asi rekordbox siempre
+  tiene prioridad sobre LightHouse.
+
+3. RESPALDO CON LA UR12
+-----------------------
+Si el loopback no funciona (por ejemplo, rekordbox usa ASIO):
+- Conecta el booth (con cable en Y) a la entrada 2 de la UR12. Deja +48V
+  APAGADO y la ganancia baja.
+- En dispositivos elige "Entrada · UR12..." y en "Canal" elige "Canal 2"
+  (o el canal donde conectaste el cable).
+- Sensibilidad:
+  * "Automatica (AGC)": el programa ajusta solo el nivel.
+  * "Fija (la perilla manda)": la perilla de booth del DDJ-FLX6 es la
+    sensibilidad. Ajusta tambien "Referencia (dBFS)" si hace falta.
+- Indicadores: "SIN SEÑAL" (rojo) = no llega audio hace mas de 3 s.
+  "SATURA" = la señal entra demasiado fuerte: baja la perilla.
+
+4. ATAJOS DE TECLADO
+--------------------
+- Espacio: blackout (apagar la luz)
+- 1, 2, 3, 4: modos Auto / Pulso / Tranquilo / Manual
+- F (mantener): flash al 100 %
+- T: tap tempo (toca al ritmo, 3 o mas veces)
+- F11 o doble clic en la ventana Luz: pantalla completa; Esc: salir
+
+5. DONDE QUEDAN LOS ARCHIVOS
+----------------------------
+- Configuracion: %APPDATA%\LightHouse\config.json
+- Registros (logs): %LOCALAPPDATA%\LightHouse\logs
+  (pega esas rutas en el Explorador de archivos). Si algo falla, manda el
+  archivo lighthouse.log.
+
+6. CHECKLIST DE SHOW
+--------------------
+1. LightHouse en la laptop DJ: el medidor se mueve con rekordbox. Las teclas
+   responden con LightHouse al frente.
+2. Modo Juego en todas las TV y retardo calibrado por pantalla.
+3. Laptops con corriente; sin suspension, notificaciones ni actualizaciones.
+4. Red entre laptops por cable o hotspot propio. La TV muestra el logo si se
+   desconecta.
+5. Probar cada look, el blackout, el bump y soltar la tecla.
+6. Bajar la musica: la luz cae a calma, no se congela.
+7. Si falla el loopback: respaldo booth -> Y -> UR12 (+48V apagado). Si falla
+   todo: tap tempo (0) + looks manuales.
+8. Cables fijados con cinta y cable de repuesto a la mano. Mantener el HTML
+   actual como respaldo.
+
+AVISO: los destellos rapidos pueden afectar a personas con epilepsia
+fotosensible. Avisa a los invitados.

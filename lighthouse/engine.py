@@ -3,9 +3,49 @@ import collections
 import math
 
 import numpy as np
-from scipy.signal import butter, sosfilt
 
 BLOCK = 480  # frames por bloque (~10 ms @ 48 kHz)
+DECIM = 8  # decimación antes del filtro de graves
+QS = (0.5412, 1.3066)  # Q de las 2 secciones de un Butterworth de 4º orden
+
+
+def _rbj(kind, f0, fs, q):
+    """Biquad RBJ (Audio EQ Cookbook) normalizado: (b0, b1, b2, a1, a2)."""
+    w = 2 * math.pi * f0 / fs
+    c, a = math.cos(w), math.sin(w) / (2 * q)
+    if kind == "lp":
+        b0, b1 = (1 - c) / 2, 1 - c
+    else:
+        b0, b1 = (1 + c) / 2, -(1 + c)
+    a0 = 1 + a
+    return (b0 / a0, b1 / a0, b0 / a0, -2 * c / a0, (1 - a) / a0)
+
+
+class BandPass:
+    """Pasa-banda 30 Hz..hz: 2 biquads pasa-altos + 2 pasa-bajos (Butterworth 4º por lado),
+    forma directa II transpuesta con estado persistente. Trabaja a sr/DECIM."""
+
+    def __init__(self, sr, hz):
+        fs = sr / DECIM
+        hz = min(hz, 0.45 * fs)
+        self.c = [_rbj("hp", 30, fs, q) for q in QS] + [_rbj("lp", hz, fs, q) for q in QS]
+        self.z = [[0.0, 0.0] for _ in self.c]
+
+    def __call__(self, x):
+        """x: bloque a sr -> lista filtrada a sr/DECIM."""
+        n = len(x) // DECIM
+        # ponytail: decimar x8 promediando grupos (filtro antialias tipo caja); basta para energía < 250 Hz
+        y = x[:n * DECIM].reshape(n, DECIM).mean(axis=1).tolist()
+        for (b0, b1, b2, a1, a2), z in zip(self.c, self.z):
+            z1, z2 = z
+            for i, v in enumerate(y):
+                o = b0 * v + z1
+                z1 = b1 * v - a1 * o + z2
+                z2 = b2 * v - a2 * o
+                y[i] = o
+            z[0], z[1] = z1, z2
+        return y
+
 
 
 class Engine:
@@ -20,6 +60,8 @@ class Engine:
         self.sens = 1.5            # umbral de golpe = 0.3/sens + flujo medio (1 s)
         self.min_gap = 0.25        # s, refractario entre golpes (0.25 => máx 240 BPM)
         self.gate_db = -50.0       # compuerta, medida antes del AGC
+        self.agc = True            # False: ganancia fija, la perilla de la mezcladora manda
+        self.ref_db = -12.0        # dBFS que valen nivel 1.0 con ganancia fija
         self.sync = "kick"         # kick: flash en cada golpe | tempo: reloj al BPM, sigue sin kick
         self.bpm_src = "auto"      # auto: BPM detectado | manual: slider / tap
         self.bpm_manual = 120.0
@@ -28,7 +70,7 @@ class Engine:
         self.decay = 0.25          # s hasta ~5 % del flash
         self.vmax, self.vmin = 1.0, 0.08  # master; piso del pulso
         self.gamma = 1.0
-        self.delay = 0.0           # s; el loopback capta antes de que suene (BT/HDMI van atrasados)
+        self.offset = 0.0          # s; >0 retrasa (BT/HDMI van atrasados); <0 anticipa (solo Al tempo)
         self.manual = 0.5
         self.calm_after = 5.0      # s sin golpes -> tranquilo
         self.calm_smooth = 1.5     # s, suavizado de la respiración
@@ -53,13 +95,13 @@ class Engine:
         self.pulse = self.smooth = 0.0
         self.hist = collections.deque([(0.0, 0)], maxlen=64)
         self.out = 0.0
+        self.last_sound = -1e9  # último t sobre la compuerta (indicador SIN SEÑAL)
 
     def set_band(self, hz):
         """Pasa-banda 30 Hz..hz (fuera DC y rumble); hz=0 -> banda completa."""
         self.band = hz
         if hz:
-            sos = butter(4, [30, hz], "bandpass", fs=self.sr, output="sos")
-            self.filt = [sos, np.zeros((sos.shape[0], 2))]  # se reemplaza entero: seguro entre hilos
+            self.filt = BandPass(self.sr, hz)  # se reemplaza entero: seguro entre hilos
         else:
             self.filt = None
 
@@ -73,12 +115,16 @@ class Engine:
             self.bpm_src = "manual"
         self.phase, self.off = self.t, 0
 
+    def lead(self):
+        """Anticipación efectiva (s): offset < 0 solo actúa Al tempo con BPM fiable; si no, 0."""
+        bpm = self.bpm_manual if self.bpm_src == "manual" else self.bpm_lock
+        return max(-self.offset, 0.0) if self.sync == "tempo" and bpm else 0.0
+
     def process(self, x):
         dt = len(x) / self.sr
         self.t += dt
-        y, f = x, self.filt
-        if f is not None:
-            y, f[1] = sosfilt(f[0], x, zi=f[1])
+        f = self.filt
+        y = np.asarray(f(x)) if f is not None else x
         self.win.append((float(np.mean(x * x)), float(np.mean(y * y))))
         full = math.sqrt(sum(w[0] for w in self.win) / len(self.win))
         band = math.sqrt(sum(w[1] for w in self.win) / len(self.win))
@@ -86,6 +132,10 @@ class Engine:
         # compuerta antes del AGC; bajo ella el AGC se congela y no infla el silencio
         silent = full < 10 ** (self.gate_db / 20)
         if not silent:
+            self.last_sound = self.t
+        if not self.agc:  # ganancia fija: nivel 1.0 a ref_db; al volver al AGC parte de aquí
+            self.peak_b = self.peak_f = 10 ** (self.ref_db / 20)
+        elif not silent:
             k = math.exp(-dt / 8.0)
             self.peak_b = max(band, self.peak_b * k)
             self.peak_f = max(full, self.peak_f * k)
@@ -132,7 +182,7 @@ class Engine:
         v = {"pulso": pulse_v, "tranquilo": calm_v, "manual": self.manual,
              "auto": self.calm_w * calm_v + (1 - self.calm_w) * pulse_v}[self.mode]
         self.hist.append((min(max(v * self.vmax, 0.0), 1.0) ** self.gamma, self.flashes))
-        out, self.out_n = self.hist[-1 - min(round(self.delay / dt), len(self.hist) - 1)]
+        out, self.out_n = self.hist[-1 - min(round(max(self.offset, 0.0) / dt), len(self.hist) - 1)]
         self.out = 0.0 if self.blackout else 1.0 if self.bump else out  # manuales sin retardo
 
     def _tick(self, silent):
@@ -152,7 +202,8 @@ class Engine:
                 tick = True  # kick en la grilla: flash ya (salvo que la grilla acabe de disparar)
             else:
                 self.off += 1
-        k = math.floor((self.t - self.phase) / period)
+        # offset < 0: la grilla se adelanta |offset|; el kick que llega después cae en el refractario
+        k = math.floor((self.t - self.phase + max(-self.offset, 0.0)) / period)
         if k != self.k_last:  # cruzó un tiempo sin kick: el reloj dispara solo
             self.k_last, tick = k, True
         tick = tick and self.t - self.last_tick > 0.5 * period

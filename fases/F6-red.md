@@ -57,8 +57,8 @@ struct.pack("<2sBIBBBBBBB", b"LH", 1, seq, Lr, Lg, Lb, Rr, Rg, Rb, flags)
 - **`IP fija`** (opcional): unicast a la IP:puerto indicados.
 
 **Envío**
-- Al cambiar el frame, más un **keepalive a 50 Hz**.
-- Sockets no bloqueantes, desde el loop rápido de la UI. **Nunca** desde el hilo de audio.
+- Al cambiar el frame, más un **keepalive de al menos 30 Hz**.
+- Sockets no bloqueantes, desde `App.fast()` en el hilo Tk. Lo llaman el hilo `render` en cada bloque de audio y el loop lento a 30 Hz. **Nunca** desde el hilo de audio.
 - Errores de `sendto` (red caída) → se ignoran con un log ocasional, sin spamear.
 
 **Receptor**

@@ -4,7 +4,17 @@ import logging
 import os
 
 log = logging.getLogger(__name__)
-VERSION = 1
+VERSION = 2
+
+
+def _migrate(raw):
+    """Sube un dict guardado por versiones anteriores al formato actual (en sitio)."""
+    if raw.get("version", 1) < 2:  # F1 -> F2: retardo -> offset; la lista de audio lleva prefijo
+        if "delay" in raw and "offset" not in raw:
+            raw["offset"] = raw.pop("delay")
+        if isinstance(raw.get("device"), str) and raw["device"]:
+            raw["device"] = "Salida (loopback) · " + raw["device"]  # = audio.LOOP; F1 solo tenía loopback
+        log.info("config migrada de v%s a v%d", raw.get("version", 1), VERSION)
 
 
 def path():
@@ -42,6 +52,8 @@ def load(defaults):
         except OSError:
             log.exception("no se pudo renombrar a .bad")
         return out
+    if isinstance(raw.get("version", 1), (int, float)):
+        _migrate(raw)
     for k, d in defaults.items():
         if k in raw:
             v = _fit(raw[k], d)

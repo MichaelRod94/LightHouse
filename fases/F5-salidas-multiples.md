@@ -101,7 +101,7 @@ Hoy hay **una sola ventana Luz**. Paquete `lighthouse/`:
 - `version` de config +1.
 
 **Rendimiento**
-- El loop rápido (`after(1)`) compone y pinta **todas** las salidas.
+- `App.fast()` compone y pinta **todas** las salidas. Lo llaman el hilo `render` en cada bloque de audio y el loop lento a 30 Hz. No agregues timers `after(n)` cortos: `after(1)` gira al ~98 % de un núcleo (medido en F2).
 - `compose` se llama una vez por salida con su propio `sample(delay)`.
 
 **Self-check**
@@ -123,7 +123,7 @@ Hoy hay **una sola ventana Luz**. Paquete `lighthouse/`:
 4. `Identificar` etiqueta bien cada monitor.
 5. Con el look 1, la salida "pantalla grande" muestra el logo con su master. Con 2 o Q se une y oculta el logo. Blackout apaga todo.
 6. Al reiniciar, las salidas vuelven a sus monitores. Con un monitor desconectado, esa salida cae al primario con aviso.
-7. CPU < 5 % de un núcleo con 3 salidas a pantalla completa y audio entrando. Reporta el número.
+7. CPU < 10 % de un núcleo con 3 salidas a pantalla completa y audio entrando (F2 midió 6–9 % con una ventana). Reporta el número.
 8. `.\build.ps1` pasa y el exe hace todo lo anterior.
 9. **DPI mixto** (laptop al 125–150 % + monitor al 100 %): si no puedes probarlo, documéntalo como pendiente en la nota de estado.
 

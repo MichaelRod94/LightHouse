@@ -128,7 +128,9 @@ Referencia visual: Skrillex en EDC México 2024, "Ratata". La pantalla entera en
 
 **Teclas (`ui.py`)**
 
-- **Sondeo cada ~5 ms** en el loop rápido, con detección de flanco: acción al presionar. Para F: mientras está presionada.
+- **Sondeo en `App.fast()`**, con detección de flanco: acción al presionar. Para F: mientras está presionada.
+  - `App.fast()` lo llama el hilo `render` en cada bloque de audio (~10 ms) y el loop lento a 30 Hz cuando no hay audio.
+  - **No agregues timers `after(n)` cortos**: en Tcl 8.6 `after(1)` gira al ~98 % de un núcleo (medido en F2).
 - **Quitar los `bind_all`** de teclas de show, para no disparar dos veces.
 - **`Teclas globales`** (default **`False`**). Apagada, solo responde con `app_in_foreground()`.
   - Así se comporta como hoy la página HTML del cliente, y no compite con los atajos de rekordbox.

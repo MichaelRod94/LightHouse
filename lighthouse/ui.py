@@ -1,4 +1,4 @@
-"""GUI: ventana Control + ventana Luz, presets, watchdog de silencio y config persistente."""
+"""GUI: ventana Control + ventana Luz, presets, watchdog de silencio, reconexión y config persistente."""
 import logging
 import re
 import threading
@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 
-from . import config
+from . import config, win32
 from .audio import Audio
 from .engine import BLOCK, Engine
 
@@ -20,8 +20,8 @@ CALM = {
     "Casi apagado": dict(calm_after=5, calm_smooth=3, calm_base=3, calm_depth=5),
     "Demo (entra en 2 s)": dict(calm_after=2, calm_smooth=1, calm_base=10, calm_depth=60),
 }
-DELAYS = {"Salida por cable / USB (0 ms)": dict(delay=0), "Salida HDMI / monitor (50 ms)": dict(delay=50),
-          "Salida Bluetooth (200 ms)": dict(delay=200)}
+OFFSETS = {"Salida por cable / USB (0 ms)": dict(offset=0), "Salida HDMI / monitor (50 ms)": dict(offset=50),
+           "Salida Bluetooth (200 ms)": dict(offset=200)}
 # blanco por temperatura (aprox. de cuerpo negro), interpolado
 KELVIN = np.array([[2000, 255, 137, 18], [3000, 255, 180, 107], [4000, 255, 209, 163],
                    [5000, 255, 228, 206], [6500, 255, 249, 253], [8000, 227, 233, 255], [10000, 204, 219, 255]])
@@ -30,7 +30,10 @@ MODES = ("auto", "pulso", "tranquilo", "manual")
 COLOR_MODES = ["Blanco", "Temperatura", "Paleta (cambia en cada flash)"]
 LIGHT_GEO = "640x400+60+60"
 GEO_RE = re.compile(r"^\d+x\d+[+-]-?\d+[+-]-?\d+$")
-LAST_ERROR = None  # último error no controlado; el tick lo muestra en el label de estado
+MIC_HINT = ("Revisa Configuración → Privacidad → Micrófono → "
+            "Permitir que las aplicaciones de escritorio accedan")
+RETRY_S, NO_SIGNAL_S, CLIP_S = 3.0, 3.0, 0.5
+LAST_ERROR = None  # último error no controlado; el loop lento lo muestra en el label de estado
 
 
 def report(exc_type, exc, tb, where="excepción"):
@@ -51,11 +54,17 @@ class App:
         self.audio = Audio(self.on_block)
         self.last_audio = self.last_feed = time.perf_counter()
         self.zeros = np.zeros(BLOCK)
-        self.color = ""
+        self.color, self.key, self.rgbs = "", None, [(255, 255, 255)]
         self.vars = {}    # llave -> (var, k, fn, lo, hi)
+        self.scales = {}  # llave -> tk.Scale
         self.checks = {}  # atributo del motor -> BooleanVar
         self.palette = list(PALETTE)
         self.geo = {"geo_control": "", "geo_light": LIGHT_GEO}  # última geometría válida vista
+        self.chan_idx = 0           # 0 = Mezcla, n = Canal n
+        self.want = None            # dispositivo que debe estar abierto (para reintentar)
+        self.retry_t = 0.0
+        self.was_alive = False
+        self.shown = {}             # lo último que put() mandó a cada widget
 
         root = self.root = tk.Tk()
         root.title("LightHouse · Control")
@@ -79,14 +88,40 @@ class App:
             return fr
 
         # --- columna 0: entrada y detección
-        fr = box("Salida de audio", 0)
+        fr = box("Fuente de audio", 0)
         self.dev = ttk.Combobox(fr, state="readonly", width=44, takefocus=0)
         self.dev.pack(fill="x")
-        self.dev.bind("<<ComboboxSelected>>", lambda e: self.open())
+        self.dev.bind("<<ComboboxSelected>>", lambda e: self.pick_device())
+        row = ttk.Frame(fr); row.pack(fill="x", pady=(4, 0))
+        ttk.Label(row, text="Canal").pack(side="left")
+        self.chan = ttk.Combobox(row, state="readonly", values=["Mezcla"], width=9, takefocus=0)
+        self.chan.current(0)
+        self.chan.pack(side="left", padx=6)
+        self.chan.bind("<<ComboboxSelected>>", lambda e: self.pick_channel())
+        self.no_sig = tk.Label(row, text="", fg="#d00", font=("Segoe UI", 9, "bold"))
+        self.no_sig.pack(side="left", padx=4)
+        self.clip = tk.Label(row, text="", fg="#e60", font=("Segoe UI", 9, "bold"))
+        self.clip.pack(side="left", padx=4)
         row = ttk.Frame(fr); row.pack(fill="x", pady=(4, 0))
         ttk.Button(row, text="Reconectar", command=self.reconnect, takefocus=0).pack(side="left")
-        self.status = ttk.Label(row, text="")
+        self.status = ttk.Label(row, text="", wraplength=250)
         self.status.pack(side="left", padx=6)
+        self.low_prio = tk.BooleanVar(value=True)
+        self.low_prio.trace_add("write", lambda *_: win32.set_low_priority(self.low_prio.get()))
+        ttk.Checkbutton(fr, text="Prioridad baja (laptop DJ)", variable=self.low_prio,
+                        takefocus=0).pack(anchor="w", pady=(4, 0))
+
+        fr = box("Ganancia", 0)
+        self.agc = tk.BooleanVar(value=self.eng.agc)
+        self.checks["agc"] = self.agc
+        row = ttk.Frame(fr); row.pack(fill="x")
+        ttk.Radiobutton(row, text="Automática (AGC)", value=True, variable=self.agc,
+                        takefocus=0).pack(side="left")
+        ttk.Radiobutton(row, text="Fija (la perilla manda)", value=False, variable=self.agc,
+                        takefocus=0).pack(side="left", padx=8)
+        self.slider(fr, "Referencia (dBFS)", "ref_db", -40, 0)
+        self.agc.trace_add("write", lambda *_: self.set_agc())
+        self.set_agc()
 
         fr = box("Modo", 0)
         self.mode = tk.StringVar(value=self.eng.mode)
@@ -160,8 +195,10 @@ class App:
         self.slider(fr, "Piso pulso (%)", "vmin", 0, 50, k=0.01)
         self.slider(fr, "Curva (gamma)", "gamma", 0.5, 3.0, res=0.1)
         self.slider(fr, "Manual (%)", "manual", 0, 100, k=0.01)
-        self.presets(fr, DELAYS)
-        self.slider(fr, "Retardo luz (ms)", "delay", 0, 300, k=0.001, res=5)
+        self.presets(fr, OFFSETS)
+        self.slider(fr, "Offset (ms)", "offset", -150, 300, k=0.001, res=5)
+        self.lead = ttk.Label(fr, text="", foreground="#666")
+        self.lead.pack(anchor="w")
 
         # --- columna 2: tranquilo y color
         fr = box("Tranquilo", 2)
@@ -199,12 +236,15 @@ class App:
         # config: los defaults son los valores iniciales de arriba (Engine + UI); lo guardado válido los pisa
         defaults = self.snapshot()
         cfg = config.load(defaults)
-        self.apply(cfg)
+        self.apply(cfg)  # aplica también la prioridad (trace de low_prio)
         self.snap = self.saved = self.snapshot()
         self.dirty_t = None
+        self.fast_cmd = root.register(self.fast)
+        self.wake, self.running = threading.Event(), True
+        threading.Thread(target=self.waker, name="render", daemon=True).start()
         self.refresh(cfg["device"] or None)
         self.open()
-        self.tick()
+        self.slow()
         self.autosave()
 
     # --- widgets
@@ -214,9 +254,11 @@ class App:
         var = tk.DoubleVar(value=round(getattr(self.eng, attr) / k, 3) if init is None else init)
         row = self.ttk.Frame(fr); row.pack(fill="x")
         self.ttk.Label(row, text=label, width=15).pack(side="left", anchor="s", pady=(0, 4))
-        tk.Scale(row, from_=lo, to=hi, resolution=res, orient="horizontal", variable=var, length=200,
-                 takefocus=0, command=lambda v: fn(float(v) * k)).pack(side="left", fill="x", expand=True)
+        sc = tk.Scale(row, from_=lo, to=hi, resolution=res, orient="horizontal", variable=var, length=200,
+                      takefocus=0, command=lambda v: fn(float(v) * k))
+        sc.pack(side="left", fill="x", expand=True)
         self.vars[key or attr or label] = (var, k, fn, lo, hi)
+        self.scales[key or attr or label] = sc
         return var
 
     def check(self, fr, label, attr):
@@ -237,6 +279,12 @@ class App:
                 var.set(val)
                 setattr(self.eng, attr, val * k)
         cb.bind("<<ComboboxSelected>>", apply)
+
+    def set_agc(self):
+        """AGC o ganancia fija; la referencia solo se mueve en Fija."""
+        on = self.agc.get()
+        self.eng.agc = on
+        self.scales["ref_db"].config(state="disabled" if on else "normal", fg="#999" if on else "black")
 
     def band_from_slider(self, hz):
         hz = int(hz)
@@ -285,7 +333,8 @@ class App:
         s.update({a: v.get() for a, v in self.checks.items()})
         s.update(mode=self.mode.get(), sync=self.sync.get(), bpm_src=self.eng.bpm_src,
                  divisor=self.eng.divisor, preset=self.preset.get(), color_mode=self.color_mode.get(),
-                 palette=list(self.palette), device=self.dev.get())
+                 palette=list(self.palette), device=self.dev.get(), channel=self.chan_idx,
+                 low_priority=self.low_prio.get())
         for key, w in (("geo_control", self.root), ("geo_light", self.light)):
             if w.winfo_viewable() and not (w is self.light and w.attributes("-fullscreen")):
                 self.geo[key] = w.geometry()
@@ -322,6 +371,9 @@ class App:
             self.eng.set_band(0)
         if pick("color_mode", COLOR_MODES):
             self.color_mode.set(c["color_mode"])
+        if pick("channel", range(65)):
+            self.chan_idx = int(c["channel"])  # se ajusta al dispositivo al abrirlo
+        self.low_prio.set(c["low_priority"])
         try:
             for col in c["palette"]:
                 self.root.winfo_rgb(col)
@@ -358,6 +410,18 @@ class App:
         with self.lock:
             self.eng.process(x)
         self.last_audio = self.last_feed = time.perf_counter()
+        self.wake.set()  # pintar ya (no bloquea al hilo de audio)
+
+    def waker(self):
+        """Hilo "render": por cada bloque pide al hilo Tk que pinte (tkinter serializa la llamada).
+        Reemplaza al after(1) del diseño: en Tcl 8.6/Windows after(1) gira al ~100 % de un núcleo."""
+        while self.running:
+            self.wake.wait()
+            self.wake.clear()
+            try:
+                self.root.tk.call(self.fast_cmd)
+            except Exception:  # aún sin mainloop (RuntimeError) o cerrando (TclError)
+                time.sleep(0.05)
 
     def refresh(self, prefer=None):
         names, i = self.audio.refresh(prefer)
@@ -372,36 +436,79 @@ class App:
             self.dev.current(i)
         self.open()
 
+    def pick_device(self):
+        self.chan_idx = 0  # otro dispositivo: empieza en Mezcla
+        self.open()
+
+    def pick_channel(self):
+        self.chan_idx = self.chan.current()
+        self.audio.sel = self.chan_idx - 1 if self.chan_idx > 0 else None
+
     def open(self):
         self.audio.close()
-        if not self.audio.devs or self.dev.current() < 0:
-            self.status.config(text="Sin salidas loopback")
-            log.warning("sin salidas loopback")
+        self.retry_t, self.was_alive = time.perf_counter(), False  # un fallo al abrir no pisa su mensaje
+        i = self.dev.current()
+        if not self.audio.devs or i < 0:
+            self.want = None
+            self.status.config(text="Sin dispositivos de audio")
+            log.warning("sin dispositivos de audio")
             return
-        sr, ch = self.audio.info(self.dev.current())
+        self.want = self.dev.get()
+        sr, ch = self.audio.info(i)
+        self.chan["values"] = ["Mezcla"] + [f"Canal {n}" for n in range(1, ch + 1)]
+        self.chan.current(self.chan_idx if self.chan_idx <= ch else 0)
+        self.audio.sel = self.chan.current() - 1 if self.chan.current() > 0 else None
         with self.lock:
             self.eng.sr = sr
             self.eng.set_band(self.eng.band)  # rehacer el filtro con la frecuencia nativa
+            self.eng.last_sound = self.eng.t  # SIN SEÑAL cuenta sus 3 s desde que se abre
         try:
-            self.audio.open(self.dev.current())
+            self.audio.open(i)
             self.status.config(text=f"{sr} Hz · {ch} canales")
         except Exception as ex:
-            self.status.config(text=f"Error: {ex}")
+            self.status.config(text=f"Error: {ex}" + (f". {MIC_HINT}" if self.audio.is_input(i) else ""))
+
+    def retry(self):
+        """Stream caído: re-enumera y reabre el MISMO dispositivo; si no está, espera al próximo intento."""
+        name = self.want
+        log.info("reintentando abrir %r", name)
+        names, i = self.audio.reconnect(name)
+        self.dev["values"] = names
+        if i is not None and names[i] == name:
+            self.dev.current(i)
+            self.open()
+        else:
+            self.dev.set(name)  # se conserva (y se guarda) aunque no esté en la lista
+            self.retry_t = time.perf_counter()
+            self.status.config(text=f"Reconectando… (no está: {name})")
 
     # --- render
-    def base_rgb(self, e):
+    def base_rgbs(self):
+        """Colores base (0..255) a escalar por la salida; varios = paleta, uno por flash."""
         m = self.color_mode.get()
         if m == "Temperatura":
-            return [float(np.interp(self.kelvin.get(), KELVIN[:, 0], KELVIN[:, i])) for i in (1, 2, 3)]
+            return [tuple(float(np.interp(self.kelvin.get(), KELVIN[:, 0], KELVIN[:, i])) for i in (1, 2, 3))]
         if m.startswith("Paleta"):
-            return [c / 257 for c in self.root.winfo_rgb(self.palette[e.out_n % len(self.palette)])]
-        return [255, 255, 255]
+            return [tuple(c / 257 for c in self.root.winfo_rgb(p)) for p in self.palette]
+        return [(255, 255, 255)]
 
-    def tick(self):
+    def fast(self):
+        """Render rápido (por bloque de audio, vía waker; y en cada tick lento): solo lee la salida
+        del motor y pinta si cambió."""
+        e = self.eng
+        out, n = e.out, e.out_n
+        if (out, n) != self.key:
+            self.key = out, n
+            rgb = self.rgbs[n % len(self.rgbs)]
+            color = "#%02x%02x%02x" % (round(rgb[0] * out), round(rgb[1] * out), round(rgb[2] * out))
+            if color != self.color:
+                self.color = color
+                self.light.configure(bg=color)
+
+    def slow(self):
+        """Loop lento (~30 Hz): watchdog de silencio, reconexión, medidores, labels e indicadores."""
         global LAST_ERROR
-        if LAST_ERROR:
-            self.status.config(text=LAST_ERROR)
-            LAST_ERROR = None
+        self.root.after(33, self.slow)  # primero: una excepción (p. ej. al reconectar) no detiene el loop
         now = time.perf_counter()
         if now - self.last_audio > 0.2:  # el loopback deja de entregar bloques en silencio
             n = min(int((now - self.last_feed) * self.eng.sr) // BLOCK, 100)
@@ -410,27 +517,51 @@ class App:
                     for _ in range(n):
                         self.eng.process(self.zeros)
                 self.last_feed = now
-        e = self.eng
-        color = "#%02x%02x%02x" % tuple(round(c * e.out) for c in self.base_rgb(e))
-        if color != self.color:
-            self.color = color
-            self.light.configure(bg=color)
+        alive = self.audio.alive()
+        if self.want and not alive:
+            if self.was_alive:
+                log.warning("el stream de %r dejó de entregar audio; reintento cada %g s", self.want, RETRY_S)
+                self.status.config(text="Sin audio: reconectando…")
+            if now - self.retry_t >= RETRY_S:
+                self.retry()
+                alive = self.audio.alive()
+        self.was_alive = alive
+        if LAST_ERROR:
+            self.status.config(text=LAST_ERROR)
+            LAST_ERROR = None
+        rgbs = self.base_rgbs()
+        if rgbs != self.rgbs:
+            self.rgbs, self.key = rgbs, None  # repinta aunque la salida no cambie
+        self.fast()  # sin bloques (loopback en silencio, sin stream) también se pinta
+        e, put = self.eng, self.put
         w = 320
-        self.meter.coords(self.bar_l, 0, 4, w * min(e.lb, 1), 24)
-        self.meter.coords(self.bar_o, 0, 32, w * min(e.o_disp, 1), 52)
-        x = w * min(e.thresh, 1)
-        self.meter.coords(self.line, x, 28, x, 56)
-        self.dot.itemconfig(self.dot_id, fill="white" if e.t - e.last_beat < 0.1 else "#333")
+        put(self.meter.coords, self.bar_l, 0, 4, round(w * min(e.lb, 1)), 24)
+        put(self.meter.coords, self.bar_o, 0, 32, round(w * min(e.o_disp, 1)), 52)
+        x = round(w * min(e.thresh, 1))
+        put(self.meter.coords, self.line, x, 28, x, 56)
+        put(self.dot.itemconfig, self.dot_id, fill="white" if e.t - e.last_beat < 0.1 else "#333")
         if e.sync == "tempo" and e.bpm_src == "manual":
-            self.bpm.config(text=f"{e.bpm_manual:.0f} BPM (manual)")
+            put(self.bpm.config, text=f"{e.bpm_manual:.0f} BPM (manual)")
         else:
-            self.bpm.config(text=f"{e.bpm:.0f} BPM" if e.bpm and e.t - e.last_beat < 2 else "-- BPM")
-        self.state.config(text="BLACKOUT" if e.blackout else "FLASH" if e.bump else
-                          e.mode.upper() if e.mode != "auto" else
-                          "AUTO · TRANQUILO" if e.calm else "AUTO · PULSO")
-        self.root.after(15, self.tick)
+            put(self.bpm.config, text=f"{e.bpm:.0f} BPM" if e.bpm and e.t - e.last_beat < 2 else "-- BPM")
+        put(self.state.config, text="BLACKOUT" if e.blackout else "FLASH" if e.bump else
+            e.mode.upper() if e.mode != "auto" else "AUTO · TRANQUILO" if e.calm else "AUTO · PULSO")
+        put(self.lead.config, text="" if e.offset >= 0 else "anticipación activa" if e.lead() else
+            "anticipación inactiva (requiere Al tempo)" if e.sync != "tempo" else
+            "anticipación inactiva (esperando BPM fiable)")
+        put(self.no_sig.config, text="SIN SEÑAL" if alive and e.t - e.last_sound > NO_SIGNAL_S else "")
+        put(self.clip.config, text="SATURA" if now - self.audio.clip_t < CLIP_S else "")
+
+    def put(self, fn, *args, **kw):
+        """fn(*args, **kw) solo si cambió desde la última vez: cada config/coords hace redibujar a Tk."""
+        key = (fn.__self__, fn.__name__, args[:1])
+        if self.shown.get(key) != (args, kw):
+            self.shown[key] = (args, kw)
+            fn(*args, **kw)
 
     def quit(self):
         self.save()
+        self.running = False
         self.audio.terminate()
+        self.wake.set()
         self.root.destroy()

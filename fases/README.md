@@ -11,8 +11,8 @@
 | Fase | Prompt | Depende de | Estado | Notas |
 |---|---|---|---|---|
 | F1 | [Base modular](F1-base-modular.md) | — | ✅ | 2026-11-21: paquete `lighthouse/` v0.4.0 con config persistente, log y `python -m lighthouse --test`. Notas F2: `audio.Audio(on_block)` (`refresh/info/open/close/reconnect`) y `ui.App.on_block`; config = `config.load(defaults)/save(d)` con defaults tomados de `App.snapshot()` (nueva perilla = widget registrado en `vars`/`checks` o llave nueva en snapshot+apply). |
-| F2 | [Entrada, latencia y prioridad](F2-entrada-y-latencia.md) | F1 | ⬜ | |
-| F3 | [Ejecutable](F3-ejecutable.md) | F2 | ⬜ | |
+| F2 | [Entrada, latencia y prioridad](F2-entrada-y-latencia.md) | F1 | ✅ | 2026-11-22: una lista con entradas WASAPI (`Entrada · `) y loopback (`Salida (loopback) · `), canal (`audio.to_mono`), ganancia AGC/Fija (`agc`, `ref_db`), SIN SEÑAL/SATURA, reconexión cada 3 s, `offset` −150…+300 ms con anticipación Al tempo, `win32.set_low_priority`, config v2 (migra `delay`→`offset` y el nombre del loopback). **CPU** (`Get-Process`, 10–15 s con audio): loopback 6,0–8,9 % (F1 con el mismo método: 8,2–11,4 %), micrófono 4,9 %, exe 6,7 % → ⚠️ el loopback no baja de 5 % (solo stream + Tk ociosos ya cuestan ~2,5 %). ⚠️ **Desviación**: `after(1)` gira al ~98 % de un núcleo en Tcl 8.6.15 (trunca la espera a 0 ms), así que el pintado lo dispara cada bloque de audio (hilo `render` → `tk.call` al hilo Tk): mediana 0,2 ms, p99 ~1 ms. `.\build.ps1` re-corrido OK (57,0 MB). Notas F4/F5: todo ctypes en `win32.py`; el pintado vive en `App.fast()` (lo llaman el hilo `render` por bloque y el loop lento a 30 Hz); el loop lento actualiza widgets con `App.put()` (solo si cambian). Pendiente manual: aplausos/voz al micrófono, desconexión USB real, Administrador de tareas, UR12 y rekordbox en sitio. |
+| F3 | [Ejecutable](F3-ejecutable.md) | F2 | ✅ | 2026-11-21 (en paralelo con F2; `.\build.ps1` re-corrido OK con F2 terminada el 2026-11-22): filtro propio (decimado ×8 + 4 biquads RBJ, ~27 µs/bloque), sin scipy; `build.ps1` → `dist\LightHouse` 57,0 MB, ZIP 23,5 MB, ventana en ~0,6–1,2 s. PyInstaller 6.22.3 en `.venv-build`. Notas: el venv usa el Python 3.14 global; `run.py` hace `sys.exit(main())`; `--test` en el exe sale con 0/1 y escribe "self-check ok" al log; `LEEME.txt` se copia al ZIP. Pendiente manual: probar en una PC sin Python y la reacción de la luz con audio real. |
 | F4 | [Looks por teclado (mapa del cliente)](F4-looks-teclado.md) | F3 | ⬜ | |
 | F5 | [Salidas múltiples y pantalla completa](F5-salidas-multiples.md) | F4 | ⬜ | |
 | F6 | [Pantalla remota por red (TV grande)](F6-red.md) | F5 | ⬜ | |
@@ -98,7 +98,7 @@ DDJ-FLX6: master → bocinas principales · booth → bocinas extra (libre)
 
 **Riesgos y mitigación:**
 - **Carga en la laptop DJ**:
-  - LightHouse mide 0,4 % de un núcleo de motor y < 5 % en total, menos que el HTML actual en el navegador.
+  - LightHouse mide 0,4 % de un núcleo de motor y 6–9 % en total con loopback (medido en F2; meta < 10 %), con prioridad baja.
   - Corre con **prioridad de proceso baja** (F2): rekordbox siempre gana.
 - **Atajos de rekordbox**: si se leen las teclas de forma global, 1–7, Q, W, Z… también llegarían a rekordbox si está al frente.
   - **Por defecto las teclas solo funcionan con LightHouse al frente**, igual que hoy con el HTML.
@@ -161,7 +161,7 @@ Presupuesto medido/estimado por el arquitecto:
 |---|---|---|---|
 | Captura WASAPI compartido | 10–22 ms (medido) | Ninguno | 10–22 ms |
 | Detección (RMS 40 ms + flujo) | ~19 ms mediana (medido) | El límite real es el filtro de graves | ~15–19 ms |
-| Salto al render | `after(15)` = 15,6 ms de periodo, máx 28 (medido) | **`after(1)`**: 1,0 ms, p99 1,35 (medido) | ≤ 1 ms |
+| Salto al render | `after(15)` = 15,6 ms de periodo, máx 28 (medido) | **Hilo `render` por bloque de audio → `App.fast()` en el hilo Tk**: mediana 0,2 ms, p99 ~1 ms (medido en F2). `after(1)` queda descartado: gira al ~98 % de un núcleo en Tcl 8.6 | ≤ 1 ms |
 | Pintado Tk | 0,18 ms (medido) | — | — |
 | DWM + scanout a 60 Hz | 16–25 ms (estimado) | Solo SDL/D3D con flip directo (plan B) | igual |
 | TV / monitor | 5–15 ms; TV sin Modo Juego 30–120 ms | **Modo Juego en las TV** | 5–20 ms |
@@ -326,5 +326,5 @@ Cada prompt las repite.
   - Si el diseño decidido resulta imposible, detenerse y proponer alternativas.
 - **Cierre**:
   - La app queda funcionando.
-  - `python -m lighthouse --test` pasa; desde F3 también `.\build.ps1`.
+  - `python -m lighthouse --test` pasa; desde F3 **toda fase corre `.\build.ps1` al final** y el exe debe pasar `--test`.
   - Actualizar la tabla **Estado** (✅, fecha, nota de una línea) y añadir notas para la siguiente fase si algo cambió.
