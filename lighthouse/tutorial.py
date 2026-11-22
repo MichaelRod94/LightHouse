@@ -172,6 +172,7 @@ class Tutorial:
                             blackout=app.scene.blackout, bo_step=False)
         app.tip.on = lambda: False  # tooltips en silencio mientras dura (no toca la preferencia del usuario)
         app.tip.hide()
+        app.update_alpha()  # glass: opaca mientras dura
         if app.draw is not None and app.draw.mode == "mini":
             app.leave_mini("auto" if app.vista == "mini" else None)
         app.update_band()
@@ -188,6 +189,7 @@ class Tutorial:
         self.box.place_forget()
         self.key = self.target = None
         app.tip.__dict__.pop("on", None)
+        app.update_alpha()
         if r.get("bo_step") and not r["blackout"] and app.scene.blackout:  # nunca dejar las pantallas apagadas
             app.bo.set(False)
             app.scene.blackout = False

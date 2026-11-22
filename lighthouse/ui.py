@@ -75,6 +75,7 @@ MIC_HINT = ("Revisa Configuración → Privacidad → Micrófono → "
 NOFOCUS_NOTE = ("En la vista Mini, un clic en un look o en Blackout no le quita el teclado al programa que "
                 "está al frente (rekordbox). Un clic en la línea de estado sí trae LightHouse al frente.")
 KEYS_TEXTS = ("Teclas: activas", "Teclas: en otra ventana", "Teclas: siempre activas", "Teclas: en pausa")
+GLASS_NOTE = "En este equipo, Glass se muestra sin transparencia."  # bajo el selector Tema (fases/diseno-ui.md §13.4)
 RETRY_S, NO_SIGNAL_S, CLIP_S = 3.0, 3.0, 0.5
 # medidas en px lógicos (pasan por px())
 METER_W, METER_W_NARROW, METER_W_DENSE = 240, 120, 70  # cómoda (1 fila de looks / 2 filas) y densa
@@ -173,6 +174,8 @@ class App:
         self.palette = list(PALETTE)
         self.geo = {"geo_control": ""}  # última geometría válida vista
         self.theme_name = theme.DEFAULT
+        self.t_theme = 0.0          # ms del último cambio de tema (selector)
+        self.ptr_in = False         # puntero dentro de Control (glass: opaca)
         self.chan_idx = 0           # 0 = Mezcla, n = Canal n
         self.want = None            # dispositivo que debe estar abierto (para reintentar)
         self.retry_t = 0.0
@@ -242,6 +245,8 @@ class App:
         root.bind("<Button>", self.skip_intro, add="+")
         self.tip = tips.Tooltip(self)  # después de los binds de la raíz: los suyos van con add="+"
         self.tut = tutorial.Tutorial(self)
+        root.bind("<Enter>", self.update_alpha, add="+")  # glass: opaca con el puntero dentro (por eventos)
+        root.bind("<Leave>", self.update_alpha, add="+")
 
         # config: los defaults son los valores iniciales de arriba (Engine + UI); lo guardado válido los pisa
         defaults = self.defaults = self.snapshot()
@@ -1014,10 +1019,12 @@ class App:
         for title, path in (("Configuración", config.path()), ("Registros (lighthouse.log)", config.log_dir())):
             ttk.Label(f, text=title, style="Muted.TLabel").pack(anchor="w", pady=(S("md"), 0))
             ttk.Label(f, text=path, wraplength=self.px(TEXT_W)).pack(anchor="w")
-        self.reg(ttk.Button(f, text="Ver tutorial", command=self.tut_start, takefocus=0),
-                 "ayuda.tutorial").pack(anchor="w", pady=(S("md"), 0))
-        self.reg(ttk.Button(f, text="Abrir carpeta de registros", command=self.open_logs, takefocus=0),
-                 "ayuda.carpeta").pack(anchor="w", pady=(S("md"), 0))
+        r = ttk.Frame(f)  # los dos botones en una fila: con Tema, la tarjeta sigue cabiendo en compacto (480)
+        r.pack(fill="x", pady=(S("md"), 0))
+        self.reg(ttk.Button(r, text="Ver tutorial", command=self.tut_start, takefocus=0),
+                 "ayuda.tutorial").pack(side="left")
+        self.reg(ttk.Button(r, text="Abrir carpeta de registros", command=self.open_logs, takefocus=0),
+                 "ayuda.carpeta").pack(side="left", padx=(S("md"), 0))
         self.tips_on = self.tk.BooleanVar(value=True)  # ui.tips
         self.reg(ttk.Checkbutton(f, text="Mostrar ayudas al pasar el ratón", variable=self.tips_on, takefocus=0),
                  "ayuda.tips").pack(anchor="w", pady=(S("md"), 0))
@@ -1025,6 +1032,13 @@ class App:
         self.intro_var = self.tk.BooleanVar(value=True)  # ui.intro
         self.reg(ttk.Checkbutton(f, text="Animación de entrada", variable=self.intro_var, takefocus=0),
                  "ayuda.intro").pack(anchor="w", pady=(S("md"), 0))
+        labels = [theme.get(n)["label"] for n in theme.NAMES]  # ui.theme: se aplica en el acto, sin confirmar
+        self.theme_cb = self.field(f, "ayuda.tema", "Tema", lambda r: ttk.Combobox(
+            r, state="readonly", values=labels, width=max(map(len, labels)), takefocus=0))
+        self.theme_cb.master.pack_configure(pady=(S("md"), 0))
+        self.theme_cb.set(labels[0])
+        self.theme_cb.bind("<<ComboboxSelected>>", lambda e: self.choose_theme(theme.NAMES[self.theme_cb.current()]))
+        self.theme_note = self.note(f)  # solo si glass se ve opaco en este equipo (va al final de la tarjeta)
 
     def open_logs(self):
         d = config.log_dir()
@@ -1870,13 +1884,42 @@ class App:
             self.show_tab()
 
     def set_theme(self, name):
-        """Aplica el tema guardado (ui.theme); uno desconocido cae al por defecto con aviso. Sin selector hasta F14."""
-        if name not in theme.THEMES:
+        """Aplica un tema (ui.theme o el selector) a toda la ventana; uno desconocido cae al por defecto con
+        aviso. Al arrancar corre antes de mostrar la ventana: sin destello del tema anterior."""
+        if not isinstance(name, str) or name not in theme.THEMES:
             log.warning("config: ui.theme=%r no es un tema conocido; se usa %r", name, theme.DEFAULT)
             name = theme.DEFAULT
-        if name != self.theme_name:
+        if theme.current() != theme.get(name):
             theme.apply(self.root, name)
         self.theme_name = name
+        self.theme_cb.set(theme.get(name)["label"])
+        self.note_set(self.theme_note, GLASS_NOTE if theme.opaque_fallback() else "")
+
+    def choose_theme(self, name):
+        """Selector Ayuda → Tema: vista previa inmediata (sin confirmar ni reiniciar); se guarda con la config."""
+        t0 = time.perf_counter()
+        self.set_theme(name)
+        self.t_theme = (time.perf_counter() - t0) * 1000
+        log.info("tema: %s (%.0f ms)", self.theme_name, self.t_theme)
+
+    def update_alpha(self, _=None):
+        """Glass: opaca con el puntero dentro de Control o con el tutorial activo; translúcida al salir. Por
+        eventos (<Enter>/<Leave> de la raíz): un <Leave> hacia un hijo no cuenta, se mira dónde está el puntero."""
+        self.ptr_in = self.pointer_inside()
+        theme.set_hover(self.root, self.ptr_in or self.tut.on)
+
+    def pointer_inside(self):
+        """¿El puntero está sobre Control (o sobre la lista abierta de una de sus listas desplegables)?"""
+        call = self.root.tk.call
+        try:
+            x, y = self.root.winfo_pointerxy()
+            w = call("winfo", "containing", x, y)
+            if not w:
+                return False
+            top = str(call("winfo", "toplevel", w))
+            return top == str(self.root) or call("winfo", "class", top) == "ComboboxPopdown"
+        except self.tk.TclError:
+            return False
 
     def save(self):
         try:

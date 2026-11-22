@@ -953,7 +953,7 @@ Contraste **mínimo** de cada token sobre todos los fondos donde se usa (pares d
 | `accent_fg` sobre `accent` | 4,5 | 11,5 | 7,3 | 9,7 | 9,3 |
 | `danger_fg` sobre `danger` | 4,5 | 5,0 | 4,8 | 4,5 | 5,0 |
 | `tooltip_fg` sobre `tooltip_bg` | 4,5 | 16,0 | 16,4 | 17,9 | 16,0 |
-| `intro_fg` sobre `intro_bg` | 4,5 | 21,0 | 20,0 | 21,0 | 18,0 |
+| `intro_fg` sobre `intro_bg` | 4,5 | 21,0 | 20,0 | 15,5 | 18,0 |
 | `fg_disabled` | 3,0 | 4,0 | 5,1 | 4,5 | 4,6 |
 | `border_strong` | 3,0 | 3,8 | 5,2 | 4,5 | 5,0 |
 | `focus` | 3,0 | 7,5 | 7,4 | 7,2 | 9,4 |

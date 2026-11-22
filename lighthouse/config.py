@@ -35,6 +35,8 @@ def _migrate(raw):
     # que ponen los defaults; un valor inválido vuelve a "preguntar" (App.apply_ui)
     # F13 (sin subir la versión): ui.intro (animación de entrada, activa por defecto) es una llave nueva
     # que ponen los defaults
+    # F14 (sin subir la versión): ui.theme acepta los cuatro temas; uno que no sea texto o que no exista se
+    # normaliza a "oscuro" en load(), sin tocar ninguna otra llave
     if v < VERSION:
         log.info("config migrada de v%s a v%d", v, VERSION)
 
@@ -98,6 +100,12 @@ def load(defaults):
                 log.warning("config: %r con tipo inválido (%r); se usa el default", k, raw[k])
             else:
                 out[k] = v
+    ui = raw.get("ui")
+    if isinstance(ui, dict) and "theme" in ui and isinstance(out.get("ui"), dict) and "theme" in out["ui"]:
+        from . import theme  # F14: ui.theme acepta los temas de theme.THEMES (sin subir la versión)
+        if not isinstance(ui["theme"], str) or ui["theme"] not in theme.THEMES:
+            log.warning("config: ui.theme=%r no es un tema conocido; se usa %r", ui["theme"], theme.DEFAULT)
+            out["ui"] = dict(out["ui"], theme=theme.DEFAULT)  # solo esa llave
     return out  # llaves desconocidas: ignoradas
 
 

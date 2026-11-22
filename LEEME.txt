@@ -44,6 +44,8 @@ De arriba a abajo:
   (seccion 3, tambien con F9).
 - Se recuerdan al cerrar: tamaño y posicion de la ventana (y los del mini),
   Vista, pestaña y que "Avanzado" estaban abiertos.
+- Ayuda -> "Tema" (Oscuro, Vaporwave, Glass, Blue Ocean) cambia los colores
+  de la ventana de control; no cambia la luz de las pantallas.
 
 3. LAPTOP DJ CON REKORDBOX (lo normal)
 --------------------------------------

@@ -61,8 +61,8 @@ def check_sin_colores_sueltos():
     print("ok: ui.py, layout.py, tips.py y tutorial.py sin literales de color (salvo PALETTE y KELVIN)")
 
 
-# ids del catálogo (fases/diseno-ui.md §5.4) que existen desde F13. Falta a propósito el de F14
-# (ayuda.tema) y calib.salir (se crea al abrir Calibrar sincronía).
+# ids del catálogo (fases/diseno-ui.md §5.4) que existen desde F14. Falta a propósito calib.salir (se crea al
+# abrir Calibrar sincronía).
 CATALOG = {
     *(f"look.{k}" for k in "1234567QWERTYUZ"),
     "vivo.punto", "vivo.medidor", "vivo.bpm", "vivo.look", "vivo.estado", "vivo.previa", "vivo.teclas",
@@ -80,7 +80,7 @@ CATALOG = {
     "salidas.agregar", "salidas.quitar", "salidas.tv", "salidas.identificar", "salidas.calibrar", "sal.nombre",
     "sal.monitor", "sal.completa", "sal.destino", "sal.puerto", "sal.master", "sal.retardo", "sal.contenido",
     "sal.logo", "sal.logo_buscar", "sal.unirse", "ayuda.carpeta", "vista.fijar", "vista.ampliar", "vista.sin_foco",
-    "ayuda.tips", "ayuda.intro", "ayuda.tutorial", "tut.ver", "tut.ahora_no", "tut.no_preguntar", "tut.atras", "tut.siguiente",
+    "ayuda.tips", "ayuda.intro", "ayuda.tutorial", "ayuda.tema", "tut.ver", "tut.ahora_no", "tut.no_preguntar", "tut.atras", "tut.siguiente",
     "tut.omitir"}
 
 
@@ -385,31 +385,8 @@ def check_interfaz():
               "vista, pestaña, Avanzado y Navegar con Tab se guardan y se restauran")
 
         # repintado: un tema de prueba y de vuelta a "oscuro"
-        from tkinter import ttk
-
         def verify(t, tag):
-            n = 0
-            for (w, item), tokens in theme._painted.items():
-                for opt, token in tokens.items():
-                    if token.startswith("font."):
-                        continue
-                    got = str(w.itemcget(item, opt) if item is not None else w.cget(opt)).lower()
-                    assert got == t[token].lower(), f"{tag}: {w} {opt}: {got} != {token} {t[token]}"
-                    n += 1
-            st = ttk.Style(app.root)
-            for style, opt, token, state in (
-                    ("TFrame", "background", "surface", None), ("Bg.TFrame", "background", "bg", None),
-                    ("TLabel", "foreground", "fg", None), ("Muted.TLabel", "foreground", "fg_muted", None),
-                    ("TButton", "background", "surface_alt", None), ("TCombobox", "fieldbackground", "surface_alt", None),
-                    ("TEntry", "fieldbackground", "surface_alt", None),
-                    ("Seg.Toolbutton", "background", "surface_alt", ["selected"]),
-                    ("Link.TButton", "foreground", "fg_muted", None),
-                    ("TCheckbutton", "indicatorforeground", "accent", None)):
-                got = str(st.lookup(style, opt, state)).lower()
-                assert got == t[token].lower(), f"{tag}: ttk {style} {opt}: {got} != {token} {t[token]}"
-                n += 1
-            assert str(app.root.cget("bg")).lower() == t["bg"].lower(), tag
-            return n
+            return _painted_ok(app, t, tag)
         assert len(theme._painted) >= 60, len(theme._painted)
         test = dict(theme.get("oscuro"), bg="#102030", surface="#203040", surface_alt="#304050", fg="#FAFAF0",
                     accent="#00AA55", fg_muted="#C0C0D0")
@@ -778,12 +755,207 @@ def _descendants(w):
         yield from _descendants(c)
 
 
+def _painted_ok(app, t, tag):
+    """Cada opción de cada widget registrado con theme.paint (y los estilos ttk principales, el fondo de la raíz
+    y la lista ya creada de los Combobox) tiene el color de su token en el tema t. Devuelve cuántos comprobó."""
+    from tkinter import ttk
+    from . import theme
+    n = 0
+    for (w, item), tokens in theme._painted.items():
+        for opt, token in tokens.items():
+            if token.startswith("font."):
+                continue
+            got = str(w.itemcget(item, opt) if item is not None else w.cget(opt)).lower()
+            assert got == t[token].lower(), f"{tag}: {w} {opt}: {got} != {token} {t[token]}"
+            n += 1
+    st = ttk.Style(app.root)
+    for style, opt, token, state in (
+            ("TFrame", "background", "surface", None), ("Bg.TFrame", "background", "bg", None),
+            ("TLabel", "foreground", "fg", None), ("Muted.TLabel", "foreground", "fg_muted", None),
+            ("TButton", "background", "surface_alt", None), ("TCombobox", "fieldbackground", "surface_alt", None),
+            ("TEntry", "fieldbackground", "surface_alt", None),
+            ("Seg.Toolbutton", "background", "surface_alt", ["selected"]),
+            ("Link.TButton", "foreground", "fg_muted", None),
+            ("TCheckbutton", "indicatorforeground", "accent", None),
+            ("Big.TLabel", "foreground", "live_fg", None), ("Mini.TLabel", "foreground", "live_fg", None),
+            ("Vertical.TScrollbar", "troughcolor", "bg", None), ("TLabelframe", "bordercolor", "border", None)):
+        got = str(st.lookup(style, opt, state)).lower()
+        assert got == t[token].lower(), f"{tag}: ttk {style} {opt}: {got} != {token} {t[token]}"
+        n += 1
+    assert str(app.root.cget("bg")).lower() == t["bg"].lower(), tag
+    call = app.root.tk.call
+    for cb in (w for w in app.ids if w.winfo_class() == "TCombobox"):  # listas que ya se abrieron alguna vez
+        lb = f"{cb}.popdown.f.l"
+        if call("winfo", "exists", lb):
+            for opt, token in (("-background", "surface_alt"), ("-foreground", "fg"), ("-selectbackground", "accent")):
+                got = str(call(lb, "cget", opt)).lower()
+                assert got == t[token].lower(), f"{tag}: lista de {cb} {opt}: {got} != {token}"
+                n += 1
+    return n
+
+
+def check_temas():
+    """F14: los cuatro temas completos, contraste (glass en el peor caso), la fórmula, repintado en caliente,
+    el show no se entera, tamaños iguales, opacidad de glass (y su fallback) y ui.theme en la config."""
+    import ast
+    import copy
+    import sys
+    import time
+    from . import config, outputs, scene, theme, win32
+    from .engine import Snapshot
+    from .ui import GLASS_NOTE, App
+    T = theme
+    # 1 · completitud: los mismos tokens que "oscuro", válidos; NAMES = los temas, en el orden del selector
+    assert T.NAMES[0] == T.DEFAULT == "oscuro" and set(T.NAMES) == set(T.THEMES) and len(T.NAMES) == 4, T.NAMES
+    fixed = ("font", "space", "radius", "size", "motion", "ttk")  # no cambian entre temas (§13.1)
+    rows = {k for k in T.OSCURO if k.split(".")[0] not in fixed}  # las filas de la tabla de §13.2
+    for n in T.NAMES:
+        t = T.get(n)
+        own = set(T.THEMES[n]) - {"base"}  # un tema nuevo define él mismo cada fila (no hereda un color por olvido)
+        assert n == T.DEFAULT or own == rows, f"tema {n}: faltan {sorted(rows - own)}, sobran {sorted(own - rows)}"
+        assert set(t) == set(T.get("oscuro")), (n, sorted(set(t) ^ set(T.get("oscuro"))))
+        assert T.validate(t) == [], (n, T.validate(t))
+        assert T.THEMES[n].get("base", "oscuro") == "oscuro" and isinstance(t["label"], str) and t["label"]
+        for k in t:  # tipografía, espaciado, tamaños y tiempos: los de oscuro (§13.1)
+            if k.split(".")[0] in fixed:
+                assert t[k] == T.OSCURO[k], (n, k, t[k])
+    # 2 · contraste: todos los pares de §13.6 en cada tema; glass, también en el peor caso
+    bad = [b for n in T.NAMES for b in T.check_contrast(T.get(n), n)]
+    assert not bad, "contraste insuficiente: " + "; ".join(bad)
+    worst = {}  # el par más justo de cada tema (respecto a su mínimo), para el informe
+    for n in T.NAMES:
+        t = T.get(n)
+        for f, b, m in T.CONTRAST_PAIRS:
+            c = T.contrast(t[f], t[b]) if (f, b) in T.OPAQUE_PAIRS else T.contrast_glass(t[f], t[b], t["window.alpha"])
+            if n not in worst or c / m < worst[n][0] / worst[n][1]:
+                worst[n] = (c, m, f"{f}/{b}")
+    # 3 · la fórmula
+    C = T.contrast
+    assert abs(C("#000000", "#FFFFFF") - 21) < 0.01 and abs(C("#3A404B", "#3A404B") - 1) < 1e-9
+    assert C("#767676", "#FFFFFF") >= 4.5 > C("#777777", "#FFFFFF")
+    assert all(abs(C(a, b) - C(b, a)) < 1e-12 for a, b in (("#FFC53D", "#14161A"), ("#123049", "#EAF6FF")))
+    assert T.mix("#9FE8FF", "#FFFFFF", 1.0) == "#9FE8FF" and T.mix("#000000", "#FFFFFF", 0.5) == "#808080"
+    assert T.mix("#000000", "#FFFFFF", 0.0) == "#FFFFFF"
+    assert all(abs(T.contrast_glass(a, b, 1.0) - C(a, b)) < 1e-12 for a, b in (("#F4F8FB", "#0B1016"),
+                                                                                ("#FF5C6C", "#0B1016")))
+    assert T.contrast_glass("#F4F8FB", "#0B1016", 0.92) < C("#F4F8FB", "#0B1016")
+    # 7 · opacidad (pura): glass en reposo 0,92, con hover 1,0, sin transparencia 1,0; los demás, siempre 1,0
+    g = T.get("glass")
+    assert T.effective_alpha(g, False, True) == 0.92 and T.effective_alpha(g, True, True) == 1.0
+    assert T.effective_alpha(g, False, False) == 1.0 == T.effective_alpha(g, True, False)
+    assert all(T.effective_alpha(T.get(n), h, ok) == 1.0 for n in T.NAMES if n != "glass"
+               for h in (False, True) for ok in (False, True))
+
+    app = App(headless=True, scaling=96 / 72)
+    try:
+        call = app.root.tk.call
+        call("ttk::combobox::PopdownWindow", str(app.theme_cb))  # una lista ya abierta: se repinta a mano
+        looks0 = copy.deepcopy(scene.LOOKS)
+        sc = scene.Scene()
+        snap = Snapshot(0.7, 3, True, 1.0)
+        sc.select("2", snap)
+        frame0 = outputs.compose_output(snap, sc, scene.Cfg(), "excepto en 1", 0.8, True)
+        outs = lambda: [(str(o.win.cget("bg")), *(str(h.cget("bg")) for h in o.halves)) for o in app.outputs
+                        if not o.remote]
+        out0 = outs()
+
+        def sizes():
+            got = [app.measure(1366, 700, tab) for tab in ("show", "audio", "salidas", "ayuda")]
+            got += [app.measure(820, 90, "show", forced="mini"), app.measure(400, 150, "show", forced="mini")]
+            app.measure(1366, 700, "show")
+            return got
+        size0 = sizes()
+        widgets0, painted0 = len(list(_descendants(app.root))), len(T._painted)
+        ms, n = {}, 0
+        for name in (*T.NAMES[1:], "oscuro"):
+            app.choose_theme(name)
+            ms[name] = app.t_theme
+            # 4 · repintado: cada widget registrado con paint, los estilos ttk y las listas abiertas
+            n += _painted_ok(app, T.get(name), name)
+            assert app.theme_cb.get() == T.get(name)["label"] and app.snapshot()["ui"]["theme"] == name
+            # 5 · el show no se entera: looks, composición de las salidas y sus marcos
+            assert scene.LOOKS == looks0, name
+            assert outputs.compose_output(snap, sc, scene.Cfg(), "excepto en 1", 0.8, True) == frame0, name
+            assert outs() == out0, (name, outs(), out0)
+            # 6 · tamaños pedidos (completo por pestaña y Mini tira/bloque): los mismos en los cuatro temas
+            if name != "oscuro":
+                assert sizes() == size0, (name, sizes(), size0)
+        for _ in range(10):  # 10 cambios seguidos: ni widgets ni registros de paint nuevos
+            for name in T.NAMES:
+                app.set_theme(name)
+        app.set_theme("oscuro")
+        assert (len(list(_descendants(app.root))), len(T._painted)) == (widgets0, painted0)
+        n += _painted_ok(app, T.get("oscuro"), "oscuro tras 40 cambios")
+        # 7 · opacidad de la ventana: por eventos (puntero dentro o tutorial) y fallback opaco
+        alpha = lambda: round(float(app.root.attributes("-alpha")), 2)
+        app.choose_theme("glass")
+        assert alpha() == 0.92 and not T.opaque_fallback() and not app.theme_note.winfo_manager(), alpha()
+        T.set_hover(app.root, True)
+        assert alpha() == 1.0
+        T.set_hover(app.root, False)
+        assert alpha() == 0.92
+        app.tut.start()
+        assert alpha() == 1.0
+        app.tut.skip()
+        assert alpha() == 0.92 and float(app.tip.win.attributes("-alpha")) == 1.0  # el tooltip, siempre opaco
+        saved = win32.transparency_enabled
+        win32.transparency_enabled = lambda: False  # efectos de transparencia apagados en Windows
+        try:
+            app.choose_theme("oscuro")
+            app.choose_theme("glass")
+            assert alpha() == 1.0 and T.opaque_fallback() and app.theme_note.cget("text") == GLASS_NOTE
+            assert app.theme_note.winfo_manager() == "pack"
+        finally:
+            win32.transparency_enabled = saved
+        app.choose_theme("oscuro")
+        assert alpha() == 1.0 and not app.theme_note.winfo_manager()
+        app.set_tutorial("preguntar")
+        # 8 · config: ui.theme inválido -> "oscuro" sin tocar otras llaves; cada nombre válido va y vuelve
+        defaults = app.snapshot()
+        for badv in ("no_existe", 7):
+            raw = dict(defaults, decay=321.0, ui=dict(defaults["ui"], theme=badv, vista="compacto"))
+            out = load_cfg(raw, defaults)
+            assert out["ui"]["theme"] == "oscuro" and out["ui"]["vista"] == "compacto" and out["decay"] == 321.0
+            assert out["ui"] == dict(defaults["ui"], vista="compacto"), out["ui"]
+        old = os.environ.get("APPDATA")
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["APPDATA"] = d
+            try:
+                for name in T.NAMES:
+                    app.choose_theme(name)
+                    config.save(app.snapshot())
+                    assert config.load(defaults)["ui"]["theme"] == name, name
+            finally:
+                os.environ.pop("APPDATA") if old is None else os.environ.update(APPDATA=old)
+        app.choose_theme("oscuro")
+    finally:
+        app.quit()
+    # 5 · outputs.py y pantalla.py no importan theme (solo con código fuente; en el exe congelado se omite)
+    from . import pantalla
+    for mod in (outputs, pantalla):
+        path = getattr(mod, "__file__", None)
+        if getattr(sys, "frozen", False) or not path or not path.endswith(".py"):
+            print("aviso: sin código fuente (exe), se salta el check de imports de outputs/pantalla")
+            break
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        names = {a.name for nd in ast.walk(tree) if isinstance(nd, (ast.Import, ast.ImportFrom)) for a in nd.names}
+        mods = {nd.module or "" for nd in ast.walk(tree) if isinstance(nd, ast.ImportFrom)}
+        assert not any("theme" in x for x in names | mods), (path, names, mods)
+    print("ok: temas: " + ", ".join(f"{n} (par más justo {p} {c:.2f} ≥ {m})" for n, (c, m, p) in worst.items())
+          + f"; mismos tokens, contraste §13.6 (glass en el peor caso), fórmula; repintado en caliente ({n} colores; "
+          + "cambio " + ", ".join(f"{k} {v:.0f} ms" for k, v in ms.items()) + "); looks, salidas y tamaños "
+          + "iguales; 40 cambios sin widgets nuevos; glass 0,92 / 1,0 con puntero o tutorial / fallback opaco "
+          + "con nota; ui.theme inválido -> oscuro")
+
+
 def check_tema():
     from . import theme
     for n in theme.THEMES:
         t = theme.get(n)
         assert not theme.validate(t), (n, theme.validate(t))
-        assert not theme.contrast_failures(t, n), theme.contrast_failures(t, n)
+        assert not theme.check_contrast(t, n), theme.check_contrast(t, n)
     assert theme.px(8, 1.0) == 8 and theme.px(8, 1.5) == 12
     assert abs(theme.contrast("#000000", "#FFFFFF") - 21) < 0.01
     assert theme.validate({"bg": "#12"}) and "falta fg" in theme.validate({})
@@ -1044,3 +1216,5 @@ def selftest():
     check_tutorial()
     # --- F13: intro (manifiesto, funciones puras, reproductor genérico, omitir)
     check_intro()
+    # --- F14: temas (completitud, contraste, fórmula, repintado, show intacto, tamaños, opacidad, config)
+    check_temas()

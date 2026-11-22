@@ -195,6 +195,7 @@ TIPS = {
     "ayuda.intro": "Muestra la animación corta al abrir LightHouse. La luz y el sonido arrancan igual con o sin ella.",
     "ayuda.tutorial": "Abre un recorrido de 2 minutos que te enseña lo básico. Puedes repetirlo las veces que "
                       "quieras y salir con Esc.",
+    "ayuda.tema": "Cambia los colores de esta ventana. No cambia la luz de tus pantallas ni los colores de los looks.",
     # tutorial (banda de primer arranque y globo)
     "tut.ver": "Empieza el recorrido de 2 minutos. La luz sigue funcionando mientras tanto.",
     "tut.ahora_no": "Cierra este aviso por ahora. El recorrido siempre está en la pestaña Ayuda.",
@@ -239,6 +240,7 @@ LABELS = {
     "sal.contenido": "Contenido", "sal.logo": "Logo (PNG)", "sal.logo_buscar": "Buscar logo",
     "sal.unirse": "Seguir los looks", "calib.salir": "Salir", "ayuda.tips": "Mostrar ayudas",
     "ayuda.carpeta": "Abrir carpeta de registros", "ayuda.intro": "Animación de entrada", "ayuda.tutorial": "Ver tutorial", "tut.ver": "Ver tutorial",
+    "ayuda.tema": "Tema",
     "tut.ahora_no": "Ahora no", "tut.no_preguntar": "No volver a preguntar", "tut.atras": "Atrás",
     "tut.siguiente": "Siguiente", "tut.omitir": "Omitir tutorial",
     **{f"avanzado.{c}": "Avanzado" for c in ADV_CARDS},

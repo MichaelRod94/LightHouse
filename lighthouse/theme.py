@@ -46,8 +46,53 @@ OSCURO = {
     # tiempos (ms)
     "motion.tip_delay": 500, "motion.tip_delay_next": 100, "motion.layout_debounce": 120,
 }
-THEMES = {DEFAULT: OSCURO}  # agregar un tema = agregar una entrada (puede declarar "base": "<otro>")
+# los otros tres temas (fases/diseno-ui.md §13.2): solo lo que cambia; tipografía, medidas y tiempos, los de oscuro
+VAPORWAVE = {
+    "base": "oscuro", "label": "Vaporwave",
+    "bg": "#1A1033", "surface": "#24174A", "surface_alt": "#31205F", "hover": "#40297A", "trough": "#100A22",
+    "border": "#4A3580", "border_strong": "#A592E0",
+    "fg": "#F6EEFF", "fg_muted": "#CDBFEE", "fg_disabled": "#A294CC",
+    "accent": "#FF71CE", "accent_fg": "#1A1033", "focus": "#01CDFE", "danger": "#D6246E", "danger_fg": "#FFFFFF",
+    "danger_text": "#FF9BB0", "warn": "#FFE66D", "ok": "#05FFA1",
+    "live_fg": "#01CDFE", "meter_level": "#B967FF", "meter_hit": "#01CDFE", "meter_threshold": "#FF71CE",
+    "beat_on": "#FF71CE", "beat_off": "#40297A",
+    "tooltip_bg": "#FFF0FA", "tooltip_fg": "#1A1033", "tooltip_border": "#FF71CE", "tutorial_ring": "#01CDFE",
+    "intro_bg": "#0D0221", "intro_fg": "#FFFFFF",
+    "window.alpha": 1.0, "window.alpha_hover": 1.0, "window.dark_titlebar": True,
+    "window.caption": "#1A1033", "window.caption_fg": "#F6EEFF",
+}
+GLASS = {  # ventana translúcida (-alpha de toda la ventana Control, §13.4); opaca con el puntero dentro
+    "base": "oscuro", "label": "Glass (transparente)",
+    "bg": "#0B1016", "surface": "#121922", "surface_alt": "#1A232E", "hover": "#25313F", "trough": "#06090D",
+    "border": "#34414F", "border_strong": "#9AABBD",
+    "fg": "#F4F8FB", "fg_muted": "#C3CEDA", "fg_disabled": "#9CAAB9",
+    "accent": "#9FE8FF", "accent_fg": "#0B1016", "focus": "#FFD166", "danger": "#FF5C6C", "danger_fg": "#0B1016",
+    "danger_text": "#FF9A9A", "warn": "#FFC670", "ok": "#6FE89B",
+    "live_fg": "#F4F8FB", "meter_level": "#9AABBD", "meter_hit": "#F4F8FB", "meter_threshold": "#FF9A9A",
+    "beat_on": "#FFFFFF", "beat_off": "#25313F",
+    "tooltip_bg": "#F4F8FB", "tooltip_fg": "#0B1016", "tooltip_border": "#9AABBD", "tutorial_ring": "#FFD166",
+    "intro_bg": "#000000", "intro_fg": "#FFFFFF",
+    "window.alpha": 0.92, "window.alpha_hover": 1.0, "window.dark_titlebar": True,
+    "window.caption": "#0B1016", "window.caption_fg": "#F4F8FB",
+}
+BLUE_OCEAN = {
+    "base": "oscuro", "label": "Blue Ocean",
+    "bg": "#071A2B", "surface": "#0C2438", "surface_alt": "#123049", "hover": "#1A405F", "trough": "#04111D",
+    "border": "#23506F", "border_strong": "#6FA3C7",
+    "fg": "#EAF6FF", "fg_muted": "#A5C4DA", "fg_disabled": "#7B9BB3",
+    "accent": "#2EC4F1", "accent_fg": "#04111D", "focus": "#FFD166", "danger": "#D12F45", "danger_fg": "#FFFFFF",
+    "danger_text": "#FF8A80", "warn": "#FFC857", "ok": "#3DDC97",
+    "live_fg": "#7FE7FF", "meter_level": "#6FA3C7", "meter_hit": "#EAF6FF", "meter_threshold": "#FF8A80",
+    "beat_on": "#7FE7FF", "beat_off": "#1A405F",
+    "tooltip_bg": "#EAF6FF", "tooltip_fg": "#071A2B", "tooltip_border": "#6FA3C7", "tutorial_ring": "#FFC857",
+    "intro_bg": "#020B14", "intro_fg": "#EAF6FF",
+    "window.alpha": 1.0, "window.alpha_hover": 1.0, "window.dark_titlebar": True,
+    "window.caption": "#071A2B", "window.caption_fg": "#EAF6FF",
+}
+THEMES = {DEFAULT: OSCURO, "vaporwave": VAPORWAVE, "glass": GLASS, "blue_ocean": BLUE_OCEAN}  # nombre -> tokens
+NAMES = ("oscuro", "vaporwave", "glass", "blue_ocean")  # orden del selector (texto visible: su token label)
 REQUIRED = frozenset(OSCURO)
+BLACK, WHITE = "#000000", "#FFFFFF"  # lo que puede haber detrás de una ventana translúcida (peor caso, §13.6)
 
 # (texto/forma, fondo, mínimo): fases/diseno-ui.md §13.6. Texto normal >= 4,5; grande, indicadores y contornos >= 3,0
 CONTRAST_PAIRS = (
@@ -61,6 +106,8 @@ CONTRAST_PAIRS = (
     ("accent", "hover", 3.0), ("danger", "bg", 3.0), ("danger", "surface", 3.0), ("beat_on", "beat_off", 3.0),
     *((f, "trough", 3.0) for f in ("meter_level", "meter_hit", "meter_threshold")),
 )
+# ventanas que nunca son translúcidas (el tooltip es otra ventana; la barra de título la pinta Windows)
+OPAQUE_PAIRS = frozenset({("tooltip_fg", "tooltip_bg"), ("window.caption_fg", "window.caption")})
 
 _HEX = re.compile(r"#[0-9A-Fa-f]{6}")
 
@@ -129,10 +176,40 @@ def contrast(a, b):
     return (la + 0.05) / (lb + 0.05)
 
 
-def contrast_failures(theme, name="?"):
-    """Pares de CONTRAST_PAIRS que no llegan a su mínimo, con el nombre del tema ([] = todos cumplen)."""
-    return [f"{name}: {f} sobre {b} = {contrast(theme[f], theme[b]):.2f} < {m}"
-            for f, b, m in CONTRAST_PAIRS if contrast(theme[f], theme[b]) < m]
+def mix(color, behind, alpha):
+    """Color que se ve de `color` con opacidad alpha sobre `behind`: alpha · color + (1 − alpha) · behind."""
+    a, b = ([int(c[i:i + 2], 16) for i in (1, 3, 5)] for c in (color, behind))
+    return "#%02X%02X%02X" % tuple(round(alpha * x + (1 - alpha) * y) for x, y in zip(a, b))
+
+
+def contrast_glass(fg, bg, alpha):
+    """Peor caso de una ventana translúcida (§13.6): detrás de la letra y detrás del fondo puede haber blanco o
+    negro, y no tiene por qué ser lo mismo."""
+    return min(contrast(mix(fg, x, alpha), mix(bg, y, alpha)) for x in (BLACK, WHITE) for y in (BLACK, WHITE))
+
+
+def check_contrast(theme, name=None):
+    """Pares de CONTRAST_PAIRS (§13.6) bajo su mínimo, cada uno con tema, par, valor y mínimo ([] = todos cumplen).
+    Con window.alpha < 1, cada par (salvo el tooltip y la barra de título) también en el peor caso."""
+    name = name or theme.get("label", "?")
+    alpha, bad = theme["window.alpha"], []
+    for f, b, m in CONTRAST_PAIRS:
+        c = contrast(theme[f], theme[b])
+        if c < m:
+            bad.append(f"{name}: {f} sobre {b} = {c:.2f} < {m}")
+        elif alpha < 1 and (f, b) not in OPAQUE_PAIRS:
+            c = contrast_glass(theme[f], theme[b], alpha)
+            if c < m:
+                bad.append(f"{name}: {f} sobre {b} = {c:.2f} < {m} (peor caso con opacidad {alpha:g})")
+    return bad
+
+
+def effective_alpha(theme, hover, transparency_ok):
+    """Opacidad de Control: 1.0 sin transparencia en el equipo; con el puntero dentro (o el tutorial), la de
+    hover; si no, la de reposo."""
+    if not transparency_ok:
+        return 1.0
+    return float(theme["window.alpha_hover"] if hover else theme["window.alpha"])
 
 
 # --- tema vigente y widgets pintados
@@ -140,6 +217,8 @@ _cur = get(DEFAULT)
 _painted = {}    # (widget, ítem de Canvas | None) -> {opción: token}
 _wins = {}       # Toplevel extra (Calibrar) -> True; apply() les pone fondo y barra de título
 _listeners = []  # funciones sin argumentos que apply() llama al terminar (p. ej. vaciar cachés de put())
+# opacidad de Control: puntero dentro (o tutorial) · efectos de transparencia de Windows · -alpha funciona aquí
+_win = {"hover": False, "transparency": True, "alpha_ok": True}
 
 
 def current():
@@ -269,19 +348,28 @@ def _styles(root, t):
     s.map("Vertical.TScrollbar", background=[("active", t["hover"])], arrowcolor=[("active", t["fg"])])
 
 
-def _popdowns(w, t):
-    """El Toplevel de lista de cada Combobox se crea al usarlo y ya no lee la base de opciones: se repinta a mano."""
-    for c in w.winfo_children():
-        if c.winfo_class() == "Listbox" and str(c).endswith(".popdown.f.l"):
-            c.configure(background=t["surface_alt"], foreground=t["fg"], selectbackground=t["accent"],
-                        selectforeground=t["accent_fg"], font=t["font.body"])
-        else:
-            _popdowns(c, t)
+def _popdowns(root, t):
+    """El Toplevel de lista de cada Combobox se crea al abrirla la primera vez y ya no lee la base de opciones:
+    se repinta a mano. Lo crea Tcl, no Python (winfo_children() de tkinter no lo ve): se recorre con Tcl."""
+    call, split = root.tk.call, root.tk.splitlist
+    opts = ("-background", t["surface_alt"], "-foreground", t["fg"], "-selectbackground", t["accent"],
+            "-selectforeground", t["accent_fg"], "-font", t["font.body"])
+
+    def walk(w):
+        for c in split(call("winfo", "children", w)):
+            if call("winfo", "class", c) == "TCombobox":
+                lb = f"{c}.popdown.f.l"
+                if call("winfo", "exists", lb):
+                    call(lb, "configure", *opts)
+            else:
+                walk(c)
+    walk(str(root))
 
 
 def apply(root, theme=None):
-    """ÚNICO punto que toca ttk.Style, la base de opciones, el fondo de la raíz, -alpha y la barra de título.
-    Se puede llamar más de una vez (cambio de tema en caliente): vuelve a pintar todo lo registrado.
+    """ÚNICO punto que toca ttk.Style, la base de opciones, el fondo de la raíz, -alpha (effective_alpha; el
+    puntero lo cambia set_hover) y la barra de título. Se puede llamar más de una vez (cambio de tema en
+    caliente): vuelve a pintar todo lo registrado.
     theme = nombre, dict (puede declarar "base") o None (el vigente)."""
     global _cur
     if theme is not None:
@@ -300,8 +388,11 @@ def apply(root, theme=None):
     _styles(root, t)
     from tkinter import font as tkfont
     body = t["font.body"]
+    want = dict(family=body[0], size=body[1], weight="normal")
     for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont", "TkCaptionFont"):
-        tkfont.nametofont(name, root=root).configure(family=body[0], size=body[1], weight="normal")
+        f = tkfont.nametofont(name, root=root)
+        if any(f.cget(k) != v for k, v in want.items()):  # solo si cambia: reconfigurar una fuente con nombre
+            f.configure(**want)                            # rehace todos los widgets y Tk no libera esa memoria
     for opt, key in (("background", "surface_alt"), ("foreground", "fg"), ("selectBackground", "accent"),
                      ("selectForeground", "accent_fg")):
         root.option_add(f"*TCombobox*Listbox.{opt}", t[key])
@@ -318,12 +409,45 @@ def apply(root, theme=None):
         del _wins[w]
     for w in (root, *_wins):
         _chrome(w, t)
-    try:
-        root.attributes("-alpha", t["window.alpha"])
-    except Exception:
-        log.warning("no se pudo aplicar -alpha")
+    if t["window.alpha"] < 1:  # el equipo puede tener los efectos de transparencia apagados (se relee en cada cambio)
+        from . import win32
+        _win["transparency"] = win32.transparency_enabled()
+        if not _win["transparency"]:
+            log.info("efectos de transparencia de Windows desactivados: %s se muestra opaco", t["label"])
+    _alpha(root)
     for fn in _listeners:
         fn()
+
+
+def _alpha(root):
+    """-alpha de Control según el tema vigente, el puntero y la transparencia del equipo (solo Control: nunca
+    las salidas ni el tooltip). Si no se aplica (lanza o al leerlo no es el pedido), queda opaca para siempre."""
+    a = effective_alpha(_cur, _win["hover"], _win["transparency"] and _win["alpha_ok"])
+    try:
+        root.attributes("-alpha", a)
+        got = float(root.attributes("-alpha"))
+    except Exception:
+        got = None
+    if got is None or abs(got - a) > 0.005:
+        log.warning("-alpha %.2f no se aplicó (leído: %s); la ventana queda opaca", a, got)
+        _win["alpha_ok"] = False
+        try:
+            root.attributes("-alpha", 1.0)
+        except Exception:
+            pass
+
+
+def set_hover(root, on):
+    """Puntero dentro de Control o tutorial activo (on): opacidad de hover; si no, la de reposo. Por eventos."""
+    if _win["hover"] != bool(on):
+        _win["hover"] = bool(on)
+        if _cur["window.alpha"] != _cur["window.alpha_hover"]:
+            _alpha(root)
+
+
+def opaque_fallback():
+    """¿El tema vigente pide transparencia y este equipo la muestra opaca? (nota bajo el selector)."""
+    return _cur["window.alpha"] < 1 and not (_win["transparency"] and _win["alpha_ok"])
 
 
 def _alive(w):

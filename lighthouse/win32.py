@@ -1,5 +1,5 @@
-"""Todo el ctypes del proyecto (Windows): prioridad, teclado, DPI, monitores, keep-awake, rectángulos y estilo
-"no activar" (vista Mini)."""
+"""Todo el ctypes del proyecto (Windows): prioridad, teclado, DPI, monitores, keep-awake, rectángulos, estilo
+"no activar" (vista Mini), barra de título y transparencia del sistema (winreg)."""
 import ctypes
 import logging
 import os
@@ -148,14 +148,19 @@ def keep_awake(on: bool) -> bool:
     return ok
 
 
+_dwm = []  # dwmapi cargada una sola vez (cargarla en cada llamada hacía crecer la memoria en cada cambio de tema)
+
+
 def _dwm_set(hwnd, attr, value) -> bool:
     """DwmSetWindowAttribute con un entero de 4 bytes; False (sin lanzar) si el sistema no lo soporta."""
     try:
-        dwm = ctypes.WinDLL("dwmapi")
-        dwm.DwmSetWindowAttribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
-        dwm.DwmSetWindowAttribute.restype = ctypes.c_long
+        if not _dwm:
+            dwm = ctypes.WinDLL("dwmapi")
+            dwm.DwmSetWindowAttribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
+            dwm.DwmSetWindowAttribute.restype = ctypes.c_long
+            _dwm.append(dwm.DwmSetWindowAttribute)
         v = ctypes.c_int(value)
-        return dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v), ctypes.sizeof(v)) == 0
+        return _dwm[0](hwnd, attr, ctypes.byref(v), ctypes.sizeof(v)) == 0
     except (OSError, AttributeError, ValueError):
         return False
 
@@ -175,6 +180,19 @@ def set_caption_color(hwnd, bg, fg) -> bool:
         return _dwm_set(hwnd, 35, ref(bg)) & _dwm_set(hwnd, 36, ref(fg))
     except (ValueError, TypeError):
         return False
+
+
+def transparency_enabled() -> bool:
+    """Efectos de transparencia de Windows (Configuración → Personalización → Colores): EnableTransparency de
+    HKCU\\...\\Themes\\Personalize. Si el valor no existe o no se puede leer, True."""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+            v, _ = winreg.QueryValueEx(k, "EnableTransparency")
+        return bool(v)
+    except (OSError, TypeError, ValueError):
+        return True
 
 
 def set_no_activate(hwnd, on) -> bool:
