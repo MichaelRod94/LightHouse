@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 
-from . import VERSION, config, layout, net, outputs, scene, theme, win32
+from . import VERSION, config, layout, net, outputs, scene, theme, tips, win32
 from .audio import Audio
 from .engine import BLOCK, Engine
 from .outputs import JOIN, LOGO, CONTENT, MAX_OUTPUTS, compose_output, make_output, remote_output
@@ -229,6 +229,7 @@ class App:
         root.bind("<FocusOut>", lambda e: self.set_bump_mouse(False) if self.bump_mouse else None)
         root.bind("<Escape>", lambda e: root.focus_set())  # devuelve el foco a la ventana (teclas activas)
         root.bind("<MouseWheel>", self.on_wheel)
+        self.tip = tips.Tooltip(self)  # después de los binds de la raíz: los suyos van con add="+"
 
         # config: los defaults son los valores iniciales de arriba (Engine + UI); lo guardado válido los pisa
         defaults = self.defaults = self.snapshot()
@@ -953,6 +954,10 @@ class App:
             ttk.Label(f, text=path, wraplength=self.px(TEXT_W)).pack(anchor="w")
         self.reg(ttk.Button(f, text="Abrir carpeta de registros", command=self.open_logs, takefocus=0),
                  "ayuda.carpeta").pack(anchor="w", pady=(S("md"), 0))
+        self.tips_on = self.tk.BooleanVar(value=True)  # ui.tips
+        self.reg(ttk.Checkbutton(f, text="Mostrar ayudas al pasar el ratón", variable=self.tips_on, takefocus=0),
+                 "ayuda.tips").pack(anchor="w", pady=(S("md"), 0))
+        self.tips_on.trace_add("write", lambda *_: self.tip.hide())
 
     def open_logs(self):
         d = config.log_dir()
@@ -995,6 +1000,7 @@ class App:
         self.layout, self.live_n = lay, rows
         old, new = self.draw, lay
         self.draw = new
+        self.tip.hide()
         mini, was = new.mode == "mini", old is not None and old.mode == "mini"
         fits = self.mini_state_fits(w) if mini and new.look_rows == 2 else True
         if old is None or mini != was:
@@ -1040,6 +1046,7 @@ class App:
             self.cards[cid].grid(in_=self.colfr[c], row=r, column=0, sticky="new", pady=(0, S("sm")))
 
     def show_tab(self):
+        self.tip.hide()
         self.place_cards()
         self.body_cv.yview_moveto(0)
 
@@ -1283,6 +1290,8 @@ class App:
     def on_focus_in(self, e):
         w = e.widget
         self.nav_focus = bool(self.tab_nav.get()) and w is not self.root and w in self.ids
+        if self.nav_focus:  # el tooltip del control enfocado (se oculta con Esc o al mover el foco)
+            self.tip.focus(w)
         if self.nav_focus and self.inside(w, self.body):  # que el control enfocado quede a la vista
             y, h, top = w.winfo_rooty() - self.body.winfo_rooty(), w.winfo_height(), self.body_cv.canvasy(0)
             view, total = self.body_cv.winfo_height(), max(self.body.winfo_height(), 1)
@@ -1677,6 +1686,8 @@ class App:
             anchor="w", pady=(self.sp("md"), 0))
         self.reg(ttk.Button(fr, text="Salir", command=self.calib_exit, takefocus=1 if self.tab_nav.get() else 0),
                  "calib.salir").pack(anchor="e", pady=(self.sp("md"), 0))
+        self.tip.watch(w)
+        self.tip.attach_all()
         log.info("calibración de sincronía: inicio")
 
     def calib_exit(self):
@@ -1705,7 +1716,7 @@ class App:
                  look_colors={k: list(v) for k, v in self.look_hex.items()},
                  outputs=[o.snapshot() for o in self.outputs],
                  ui={"theme": self.theme_name, "vista": self.vista, "tab": self.tab_var.get(),
-                     "avanzado": dict(self.adv_open), "tab_nav": self.tab_nav.get()})
+                     "avanzado": dict(self.adv_open), "tab_nav": self.tab_nav.get(), "tips": self.tips_on.get()})
         if self.root.winfo_viewable():  # en Mini (a mano) la ventana es la mini; geo_control, la normal
             if self.vista != "mini":
                 self.geo["geo_control"] = self.root.geometry()
@@ -1780,6 +1791,7 @@ class App:
         for cid in self.adv:
             self.set_adv(cid, u["avanzado"].get(cid, False))
         self.tab_nav.set(u["tab_nav"])
+        self.tips_on.set(u["tips"])
         if self.draw:
             self.show_tab()
 

@@ -29,6 +29,8 @@ def _migrate(raw):
         raw["geo_control"] = g[1] if g else ""
     # F9 (sin subir la versión): ui.geo_mini, ui.mini_encima, ui.mini_sin_foco y keys.mini son llaves nuevas
     # que ponen los defaults; ui.vista ya aceptaba "mini"
+    # F10 (sin subir la versión): ui.tips (ayudas al pasar el ratón, activo por defecto) es una llave nueva
+    # que ponen los defaults
     if v < VERSION:
         log.info("config migrada de v%s a v%d", v, VERSION)
 

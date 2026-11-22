@@ -41,8 +41,8 @@ def check_sin_colores_sueltos():
     import ast
     import re
     import sys
-    from . import layout, ui
-    for mod in (ui, layout):
+    from . import layout, tips, ui
+    for mod in (ui, layout, tips):
         path = getattr(mod, "__file__", None)
         if getattr(sys, "frozen", False) or not path or not path.endswith(".py"):
             print("aviso: sin código fuente (exe), se salta el check de colores sueltos")
@@ -58,11 +58,11 @@ def check_sin_colores_sueltos():
                and (re.fullmatch(r"#[0-9a-fA-F]{3,12}", n.value) or n.value.lower() in COLOR_NAMES
                     or n.value.startswith("System"))]
         assert not bad, f"colores sueltos en {os.path.basename(path)}: {bad}"
-    print("ok: ui.py y layout.py sin literales de color (salvo PALETTE y KELVIN)")
+    print("ok: ui.py, layout.py y tips.py sin literales de color (salvo PALETTE y KELVIN)")
 
 
-# ids del catálogo (fases/diseno-ui.md §5.4) que existen desde F9. Faltan a propósito los de F10–F14
-# (ayuda.tutorial, ayuda.tips, ayuda.intro, ayuda.tema, tut.*) y calib.salir (se crea al abrir Calibrar sincronía).
+# ids del catálogo (fases/diseno-ui.md §5.4) que existen desde F10. Faltan a propósito los de F11–F14
+# (ayuda.tutorial, ayuda.intro, ayuda.tema, tut.*) y calib.salir (se crea al abrir Calibrar sincronía).
 CATALOG = {
     *(f"look.{k}" for k in "1234567QWERTYUZ"),
     "vivo.punto", "vivo.medidor", "vivo.bpm", "vivo.look", "vivo.estado", "vivo.previa", "vivo.teclas",
@@ -79,7 +79,8 @@ CATALOG = {
     "calma.preset", "calma.espera", "calma.suavidad", "calma.base", "calma.respira", "salidas.lista",
     "salidas.agregar", "salidas.quitar", "salidas.tv", "salidas.identificar", "salidas.calibrar", "sal.nombre",
     "sal.monitor", "sal.completa", "sal.destino", "sal.puerto", "sal.master", "sal.retardo", "sal.contenido",
-    "sal.logo", "sal.logo_buscar", "sal.unirse", "ayuda.carpeta", "vista.fijar", "vista.ampliar", "vista.sin_foco"}
+    "sal.logo", "sal.logo_buscar", "sal.unirse", "ayuda.carpeta", "vista.fijar", "vista.ampliar", "vista.sin_foco",
+    "ayuda.tips"}
 
 
 def check_layout():
@@ -420,6 +421,92 @@ def check_interfaz():
         app.quit()
 
 
+JERGA = {"decay", "offset", "gamma", "refractario", "agc", "dbfs", "master", "kick", "tempo", "tap", "flash",
+         "lecturas", "piso", "ganancia", "compuerta", "loopback"}  # columna "Hoy" de §2.3
+
+
+def check_tips():
+    """F10: cada control interactivo tiene tooltip (con su enlace), textos de calidad, sin huérfanos, colocación
+    dentro del monitor sin tapar el puntero y títulos con la tecla real."""
+    import re
+    from . import tips
+    from .tips import TIPS, place, text, title
+    from .ui import App
+    from .win32 import Monitor
+    app = App(headless=True)
+    try:
+        lights = {str(o.win) for o in app.outputs if not o.remote}
+        tipwin = str(app.tip.win)
+        seen, bad = {}, []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if str(c) in lights or str(c) == tipwin:
+                    continue
+                clickable = any(b in ("<Button-1>", "<ButtonPress-1>", "<1>") for b in c.bind())
+                if c.winfo_class() in INTERACTIVE or clickable:
+                    wid = app.ids.get(c)
+                    if not wid:
+                        bad.append(f"{c} (sin id)")
+                    elif wid not in TIPS:
+                        bad.append(f"{c} (id {wid} sin texto en TIPS)")
+                    elif "<Enter>" not in c.bind():
+                        bad.append(f"{c} (id {wid} sin enlace de hover)")
+                    seen[wid] = c
+                walk(c)
+        walk(app.root)
+        assert not bad, f"controles sin tooltip: {bad}"
+        # 1 · cobertura: lo registrado también resuelve (p. ej. un widget que no es de los de la lista)
+        miss = sorted(set(app.ids.values()) - set(TIPS))
+        assert not miss, f"ids registrados sin texto en TIPS: {miss}"
+        # 3 · sin huérfanos: cada texto es de un control registrado (calib.salir nace al abrir Calibrar)
+        orphan = sorted(set(TIPS) - set(app.ids.values()) - {"calib.salir"})
+        assert not orphan, f"textos de controles que ya no existen: {orphan}"
+        # 2 · calidad (también con las teclas ya sustituidas)
+        weak = []
+        for wid in TIPS:
+            t = text(wid, app)
+            plain = re.sub(r'"[^"]*"', "", t)  # un valor citado tal como se ve en pantalla no cuenta
+            words = {w.lower() for w in re.findall(r"\w+", plain)} & JERGA
+            if not t.strip() or len(t) > tips.MAX_LEN or not t.endswith(".") or words or "{" in t:
+                weak.append((wid, len(t), sorted(words)))
+        assert not weak, f"textos que no cumplen las reglas de §5.2: {weak}"
+        # 4 · place: puntero en el centro, cerca de cada borde y en cada esquina
+        n = 0
+        for mon in (Monitor("a", 0, 0, 1366, 768, True), Monitor("b", -2560, -360, 2560, 1440, False)):
+            xs = (mon.x, mon.x + 5, mon.x + mon.w // 2, mon.x + mon.w - 6, mon.x + mon.w - 1)
+            ys = (mon.y, mon.y + 5, mon.y + mon.h // 2, mon.y + mon.h - 6, mon.y + mon.h - 1)
+            for w, h in ((340, 60), (340, 140), (230, 200)):
+                for px in xs:
+                    for py in ys:
+                        x, y = place(px, py, w, h, mon)
+                        assert mon.x <= x and x + w <= mon.x + mon.w and mon.y <= y and y + h <= mon.y + mon.h, \
+                            ((px, py, w, h), (x, y), mon)
+                        assert not (x <= px < x + w and y <= py < y + h), ((px, py, w, h), (x, y))
+                        n += 1
+        mon = Monitor("a", 0, 0, 1366, 768, True)
+        assert place(100, 100, 300, 80, mon) == (114, 120)           # normal: 14 a la derecha y 20 debajo
+        assert place(1300, 100, 300, 80, mon)[0] == 1300 - 14 - 300  # voltea a la izquierda
+        assert place(100, 740, 300, 80, mon)[1] == 740 - 20 - 80     # voltea hacia arriba
+        win = (100, 700, 800, 80)  # Mini al fondo del monitor: el tooltip sale arriba de la ventana
+        x, y = place(300, 720, 300, 80, mon, avoid=win)
+        assert y + 80 <= win[1] and x >= 0, (x, y)
+        x, y = place(300, 100, 300, 80, mon, avoid=(100, 50, 800, 80))  # y con sitio, debajo
+        assert y >= 130, (x, y)
+        # 5 · título con la tecla real (y con la que cambió el usuario)
+        assert title("blackout", app) == "Blackout · Espacio", title("blackout", app)
+        assert title("look.2", app) == "Look 2 · Rojo · 2" and "Ampliar · F9" == title("vista.ampliar", app)
+        assert "Espacio" in text("blackout", app) and "F" in text("look.Z", app)
+        app.keys["blackout"], app.keys["1"] = ["B"], ["X"]
+        assert title("blackout", app) == "Blackout · B" and "Espacio" not in title("blackout", app)
+        assert "(o B)" in text("blackout", app) and title("look.1", app).endswith("· X")
+        print(f"ok: tooltips: {len(seen)} controles interactivos con tooltip y enlace, {len(TIPS)} textos (≤ 200, con "
+              f"punto, sin jerga), sin huérfanos; place en {n} puntos (monitor 1366×768 y con origen negativo); "
+              f"título con la tecla real")
+    finally:
+        app.quit()
+
+
 def check_tema():
     from . import theme
     for n in theme.THEMES:
@@ -680,3 +767,5 @@ def selftest():
     check_tamanos()
     # --- F9: vista Mini (tamaños en check_tamanos; F9 1 en check_layout)
     check_mini()
+    # --- F10: tooltips (cobertura de todos los controles, textos, colocación y títulos)
+    check_tips()
