@@ -10,7 +10,7 @@ import sys
 import threading
 import traceback
 
-from . import VERSION
+from . import VERSION, __author__
 
 log = logging.getLogger("lighthouse")
 
@@ -48,7 +48,7 @@ def main(argv=None):
         from . import pantalla
         install_hooks()
         return pantalla.main([a for a in argv if a != "--pantalla"])
-    log.info("arranque LightHouse %s · Python %s · %s", VERSION, platform.python_version(), platform.platform())
+    log.info("arranque LightHouse %s (%s) · Python %s · %s", VERSION, __author__, platform.python_version(), platform.platform())
     install_hooks()
     sys.setswitchinterval(0.001)  # el hilo de audio suelta el GIL al render en ≤ 1 ms (default 5 ms)
     from . import win32

@@ -1,1 +1,2 @@
-VERSION = "0.4.0"
+VERSION = "1.0.0"
+__author__ = "Michael Rodríguez Reséndiz"
