@@ -15,36 +15,64 @@ LightHouse escucha la musica y la convierte en luz. No necesitas instalar nada.
   activa "Permitir que las aplicaciones de escritorio accedan al microfono".
   Es necesario para usar la entrada de la interfaz UR12.
 
-2. LAPTOP DJ CON REKORDBOX (lo normal)
---------------------------------------
-- En la lista de dispositivos elige "Salida (loopback) · <dispositivo que usa rekordbox>"
-  (el mismo que elegiste en rekordbox: Preferencias -> Audio).
-- Pon musica en rekordbox y confirma que el medidor se mueve.
-- Deja activada la casilla "Prioridad baja (laptop DJ)": asi rekordbox siempre
-  tiene prioridad sobre LightHouse.
+2. LA VENTANA CONTROL
+---------------------
+De arriba a abajo:
+- Barra de looks: los 15 looks (tecla + nombre + muestra de color). El activo
+  se ve en ambar.
+- Franja "En vivo" (siempre a la vista): punto de golpe, BPM, medidor, look
+  activo, vista previa de la Salida 1, estado (AUTO · PULSO...), avisos, Modo
+  (F1-F4), Vista, boton Bump y Blackout.
+  Avisos: "Teclas: activas / en otra ventana / siempre activas / en pausa"
+  (un clic ahi trae LightHouse al frente sin cambiar nada), "SIN SEÑAL",
+  "SATURA", "SIN AUDIO" / "ERROR DE AUDIO" (detalle en la pestaña Audio),
+  "TV: enviando / sin red" y "Aviso: salida N" (detalle en Salidas).
+- Pestañas Show · Audio · Salidas · Ayuda, con tarjetas. Lo fino de cada
+  tarjeta esta plegado en "Avanzado >"; un punto junto a "Avanzado" avisa que
+  algo ahi dentro no esta en su valor de fabrica.
+- La ventana se adapta sola a su tamaño (arrastra el borde o usa Windows
+  Snap): completa (ancha), media (media pantalla vertical) y compacta (franja
+  baja o ventana chica: botones de una linea, Modo como lista). Si las
+  tarjetas no caben, el cuerpo se desplaza con la rueda del mouse (la rueda
+  nunca cambia un valor).
+- "Vista": Automatica (por tamaño) o Compacta (siempre compacta).
+- Se recuerdan al cerrar: tamaño y posicion de la ventana, Vista, pestaña y
+  que "Avanzado" estaban abiertos.
 
-3. RESPALDO CON LA UR12
+3. LAPTOP DJ CON REKORDBOX (lo normal)
+--------------------------------------
+- Pestaña Audio -> "Fuente de audio": elige
+  "Salida (loopback) · <dispositivo que usa rekordbox>"
+  (el mismo que elegiste en rekordbox: Preferencias -> Audio).
+- Pon musica en rekordbox y confirma que el medidor (franja En vivo) se mueve.
+- "Fuente de audio" -> Avanzado: deja activada "Dar prioridad a rekordbox":
+  asi rekordbox siempre tiene prioridad sobre LightHouse.
+
+4. RESPALDO CON LA UR12
 -----------------------
 Si el loopback no funciona (por ejemplo, rekordbox usa ASIO):
 - Conecta el booth (con cable en Y) a la entrada 2 de la UR12. Deja +48V
   APAGADO y la ganancia baja.
-- En dispositivos elige "Entrada · UR12..." y en "Canal" elige "Canal 2"
-  (o el canal donde conectaste el cable).
-- Sensibilidad:
-  * "Automatica (AGC)": el programa ajusta solo el nivel.
-  * "Fija (la perilla manda)": la perilla de booth del DDJ-FLX6 es la
-    sensibilidad. Ajusta tambien "Referencia (dBFS)" si hace falta.
-- Indicadores: "SIN SEÑAL" (rojo) = no llega audio hace mas de 3 s.
-  "SATURA" = la señal entra demasiado fuerte: baja la perilla.
+- Pestaña Audio -> "Fuente de audio": elige "Entrada · UR12..." y en "Canal"
+  elige "Canal 2" (o el canal donde conectaste el cable).
+- Tarjeta "Nivel de entrada":
+  * "Automatico": el programa ajusta solo el nivel.
+  * "Fijo (manda la perilla del mezclador)": la perilla de booth del
+    DDJ-FLX6 es la sensibilidad. Ajusta tambien "Avanzado" -> "Nivel de
+    referencia (dB)" si hace falta.
+- Avisos en la franja En vivo: "SIN SEÑAL" (rojo) = no llega audio hace mas
+  de 3 s. "SATURA" = la señal entra demasiado fuerte: baja la perilla.
 
-4. LOOKS Y ATAJOS DE TECLADO
+5. LOOKS Y ATAJOS DE TECLADO
 ----------------------------
 Las teclas funcionan con LightHouse al frente (ventana Control o una salida),
-salvo mientras escribes en un campo de texto ("TECLAS EN PAUSA": Enter vuelve).
-Cada look queda activo hasta elegir otro; tambien se eligen con el mouse en la
-barra de arriba. Al abrir, siempre arranca en 1 Blanco.
+salvo mientras escribes en un campo de texto (aviso "Teclas: en pausa"; Enter
+vuelve) y nunca con Ctrl o Alt presionados (Alt+F4 cierra sin cambiar de
+modo). Cada look queda activo hasta elegir otro; tambien se eligen con el
+mouse en la barra de arriba. Al abrir, siempre arranca en 1 Blanco.
+La lista completa de teclas esta en la pestaña Ayuda -> "Atajos".
 
-  1  Blanco (o el color del panel Color)    Q  Estrobo blanco / rojo
+  1  Blanco (o el "Color del look 1")       Q  Estrobo blanco / rojo
   2  Rojo                                   W  Estrobo blanco / morado
   3  Azul                                   E  Pantalla partida: negro | rojo
   4  Morado                                 R  Pantalla partida: negro | morado
@@ -56,28 +84,38 @@ barra de arriba. Al abrir, siempre arranca en 1 Blanco.
 - 1 a 7 tambien con el teclado numerico.
 - Estrobos (Q a Y): el color prende a tope en cada golpe y se apaga cuando el
   golpe deja de sonar (negro real entre golpes). En E a Y los lados se
-  intercambian en cada golpe. Ajuste: panel "Estrobos" (Cierre del golpe,
-  Minimo en ms).
-- Espacio: blackout (apaga todo; otra vez para volver)
-- F (mantener): bump = color del look solido al 100 % (en Z, blanco)
+  intercambian en cada golpe. Ajuste: pestaña Show -> tarjeta "Estrobos Q-Y"
+  -> Avanzado ("Cuando se apaga el estrobo", "Duracion minima (ms)").
+- Espacio (o el boton Blackout): blackout (apaga todo; otra vez para volver)
+- F (mantener) o mantener presionado el boton "Bump": bump = color del look
+  solido al 100 % (en Z, blanco). Al soltar, todo sigue como estaba.
 - F1, F2, F3, F4: modos Auto / Pulso / Tranquilo / Manual   (antes 1 a 4)
-- 0 (o el 0 del numerico): tap tempo, toca al ritmo 3 o mas veces (antes T)
+- 0 (o el 0 del numerico): "Marcar el ritmo", toca al ritmo 3 o mas veces
+  (antes T)
 - + / - (tambien los del numerico): sensibilidad +/- 0.1 (de 1.0 a 3.0)
-- Salidas (pestaña "Salidas", hasta 4): cada una con su monitor, master,
-  retardo extra, contenido (Luz / Luz + logo PNG) y "Unirse a looks"
-  (siempre / excepto en 1 / nunca). Boton "Pantalla completa / Ventana";
-  en la salida, doble clic alterna y Esc vuelve a ventana. "Identificar"
-  rotula cada monitor 3 s; "Calibrar retardo" explica el ajuste con camara.
-- Panel "Teclado" -> "Teclas globales": las teclas funcionan aunque otro
-  programa este al frente. OJO: tambien llegan a rekordbox si esta al frente.
-- Panel "Respuesta" -> "Muy reactivo": golpes mas cortos y rapidos (drops).
-  "Normal" vuelve a los valores de siempre.
-- "Limitar destellos" (activo, maximo 6 por segundo): proteccion para personas
-  fotosensibles. Desactivalo solo a conciencia.
+- Pestaña Show:
+  * "Respuesta": "Muy reactivo" = golpes mas cortos y rapidos (drops);
+    "Normal" vuelve a los valores de siempre. "Sensibilidad" y "Limitar
+    destellos" (activo, maximo 6 por segundo: proteccion para personas
+    fotosensibles; desactivalo solo a conciencia).
+  * "Luz": "Brillo general", "Duracion del destello", sincronia y "Adelantar /
+    atrasar la luz"; en Avanzado: "Luz minima entre golpes", "Curva de
+    brillo" y "Brillo en modo Manual".
+  * "Teclado": "Teclas siempre activas (globales)": las teclas funcionan
+    aunque otro programa este al frente. OJO: tambien llegan a rekordbox si
+    esta al frente. En Avanzado: "Navegar con Tab" (moverse por los controles
+    con Tab; mientras uno tiene el foco las teclas de show quedan en pausa;
+    Esc las devuelve).
+- Pestaña Salidas (hasta 4): cada una con su monitor, "Brillo de esta
+  salida", contenido (Luz / Luz + logo PNG) y "Seguir los looks" (siempre /
+  excepto en 1 / nunca); en Avanzado, "Retraso de esta pantalla". Boton
+  "Pantalla completa / Ventana"; en la salida, doble clic alterna y Esc
+  vuelve a ventana. "Identificar pantallas" rotula cada monitor 3 s;
+  "Calibrar sincronia" explica el ajuste con camara.
 - Las teclas y los colores de cada look se pueden cambiar en config.json
   (llaves "keys" y "look_colors").
 
-5. DOS LAPTOPS: TV GRANDE POR RED (PANTALLA REMOTA)
+6. DOS LAPTOPS: TV GRANDE POR RED (PANTALLA REMOTA)
 ---------------------------------------------------
 La laptop DJ (rekordbox + LightHouse) manda por red lo que debe mostrar la
 TV; la laptop de visuales corre LightHouse en modo "pantalla" (sin audio) y
@@ -86,9 +124,11 @@ look se une en color con las demas pantallas.
 
 EN LA LAPTOP DJ
 - Pestaña "Salidas" -> "Agregar TV remota". Queda con: Destino "Automatico"
-  (no hay que configurar IPs), puerto 47800, "Unirse a looks: excepto en 1",
-  "Luz + logo" y master 30 %. Debajo de la lista se ve "Enviando por: <IPs>"
-  o "sin red". Con una IP en "Destino" se manda solo a esa laptop.
+  (no hay que configurar IPs), puerto 47800 (en Avanzado), "Seguir los looks:
+  excepto en 1", "Luz + logo" y "Brillo de esta salida" 30 %. Debajo de la
+  lista se ve "Enviando por: <IPs>" o "sin red"; en la franja En vivo,
+  "TV: enviando" o "TV: sin red". Con una IP en "Destino" se manda solo a
+  esa laptop.
 
 EN LA LAPTOP DE VISUALES
 - Acceso directo a LightHouse.exe con " --pantalla" al final del campo
@@ -122,20 +162,20 @@ COMO CONECTAR LAS DOS LAPTOPS (nunca uses el Wi-Fi del lugar)
      5 GHz si existe. La laptop DJ se conecta a esa red.
 - Si se cae la red y vuelve, el envio se recupera solo (en menos de 5 s).
 
-6. DONDE QUEDAN LOS ARCHIVOS
+7. DONDE QUEDAN LOS ARCHIVOS
 ----------------------------
 - Configuracion: %APPDATA%\LightHouse\config.json
 - Registros (logs): %LOCALAPPDATA%\LightHouse\logs
-  (pega esas rutas en el Explorador de archivos). Si algo falla, manda el
-  archivo lighthouse.log.
+  Las dos rutas se ven en la pestaña Ayuda; el boton "Abrir carpeta de
+  registros" abre la de logs. Si algo falla, manda el archivo lighthouse.log.
 
-7. CHECKLIST DE SHOW
+8. CHECKLIST DE SHOW
 --------------------
 1. LightHouse en la laptop DJ: el medidor se mueve con rekordbox. Las teclas
-   responden con LightHouse al frente.
+   responden con LightHouse al frente (aviso "Teclas: activas").
 2. Modo Juego en todas las TV y retardo calibrado por pantalla.
 3. Laptops con corriente; sin suspension, notificaciones ni actualizaciones.
-4. Red entre laptops por cable o hotspot propio (seccion 5). La TV muestra el
+4. Red entre laptops por cable o hotspot propio (seccion 6). La TV muestra el
    logo si se desconecta.
 5. Probar cada look, el blackout, el bump y soltar la tecla.
 6. Bajar la musica: la luz cae a calma, no se congela.

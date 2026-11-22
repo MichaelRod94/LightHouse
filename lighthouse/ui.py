@@ -1,16 +1,20 @@
-"""GUI: ventana Control (pestañas Show / Audio / Salidas) + salidas de video, looks por teclado, presets,
-watchdog de silencio, reconexión, calibración de retardo y config."""
+"""GUI: ventana Control (barra de looks, franja En vivo, pestañas Show / Audio / Salidas / Ayuda con tarjetas
+y layout responsive completo / medio / compacto) + salidas de video, looks por teclado, presets, watchdog de
+silencio, reconexión, calibración de sincronía y config."""
 import logging
+import math
+import os
+import re
 import threading
 import time
 
 import numpy as np
 
-from . import config, net, outputs, scene, theme, win32
+from . import VERSION, config, layout, net, outputs, scene, theme, win32
 from .audio import Audio
 from .engine import BLOCK, Engine
 from .outputs import JOIN, LOGO, CONTENT, MAX_OUTPUTS, compose_output, make_output, remote_output
-from .scene import LOOKS, Cfg, Scene
+from .scene import BLACK, LOOKS, Cfg, Scene
 
 log = logging.getLogger(__name__)
 
@@ -31,25 +35,61 @@ KEYS = {**{str(i): [str(i), f"NUMPAD{i}"] for i in range(1, 8)}, **{c: [c] for c
         "blackout": ["SPACE"], "bump": ["F"], "auto": ["F1"], "pulso": ["F2"], "tranquilo": ["F3"],
         "manual": ["F4"], "tap": ["0", "NUMPAD0"], "sens+": ["OEM_PLUS", "ADD"],
         "sens-": ["OEM_MINUS", "SUBTRACT"]}
+ACTION_NAMES = {"blackout": "Blackout", "bump": "Bump (mantener)", "auto": "Modo Auto", "pulso": "Modo Pulso",
+                "tranquilo": "Modo Tranquilo", "manual": "Modo Manual", "tap": "Marcar el ritmo",
+                "sens+": "Más sensibilidad", "sens-": "Menos sensibilidad"}
+KEY_NAMES = {"SPACE": "Espacio", "OEM_PLUS": "+", "OEM_MINUS": "−", "ADD": "Num +", "SUBTRACT": "Num −"}
+# nombre corto de cada look para su botón (el largo, de scene.LOOKS, va en "Look 2 · Rojo")
+LOOK_SHORT = {"1": "Blanco", "2": "Rojo", "3": "Azul", "4": "Morado", "5": "Verde", "6": "Amar.", "7": "Arco",
+              "Q": "B/Rojo", "W": "B/Mor.", "E": "½ roja", "R": "½ mor.", "T": "½ verde", "Y": "½ azul",
+              "U": "Resp.", "Z": "Negro"}
+LOOK_NAMED_DENSE = "1234567"  # en densa solo estos llevan nombre junto a la tecla ("2 Rojo"); Q–Z, solo la tecla
 GLOBAL_WARN = "Las teclas también llegarán a rekordbox si está al frente"
 LOCAL_NOTE = "Solo con LightHouse al frente (cualquier ventana suya)"
+KEYS_NOTE = ("Con LightHouse al frente (o con \"Teclas siempre activas\"); nunca con Ctrl o Alt presionados "
+             "ni mientras escribes.")
 PHOTO_WARN = "Rojo saturado a pantalla completa > 3 Hz puede provocar crisis en personas fotosensibles"
 # blanco por temperatura (aprox. de cuerpo negro), interpolado
 KELVIN = np.array([[2000, 255, 137, 18], [3000, 255, 180, 107], [4000, 255, 209, 163],
                    [5000, 255, 228, 206], [6500, 255, 249, 253], [8000, 227, 233, 255], [10000, 204, 219, 255]])
 PALETTE = ["#ff2a55", "#ff9f1c", "#2ec4ff", "#9b5cff"]
 MODES = ("auto", "pulso", "tranquilo", "manual")
+MODE_LABELS = [f"F{i} {m.capitalize()}" for i, m in enumerate(MODES, 1)]  # segmentos (cómoda)
+MODE_SHORT = [m.capitalize() for m in MODES]  # lista desplegable (densa, ahorra ancho)
 COLOR_MODES = ["Blanco", "Temperatura", "Paleta (cambia en cada flash)"]
+TABS = {"show": "Show", "audio": "Audio", "salidas": "Salidas", "ayuda": "Ayuda"}  # id -> etiqueta
+VISTAS = {"auto": "Automática", "compacto": "Compacta"}  # "mini" (F9) se acepta en config: en F8 = compacto
+STATES = ("BLACKOUT", "BUMP", "AUTO · TRANQUILO", "AUTO · PULSO", "PULSO", "TRANQUILO", "MANUAL")
+AUTO_PREFIX = "AUTO · "  # en densa no se muestra: el modo ya está en la lista desplegable
+BPM_MANUAL = {False: " (manual)", True: " (man.)"}  # sufijo del BPM manual (cómoda / densa)
 CALIB_TEXT = ("Pon un track con kick claro. Graba con el celular en cámara lenta (240 fps) bocina + pantallas. "
-              "Cuenta cuadros entre el golpe audible y el destello: 1 cuadro ≈ 4 ms. "
-              "Ajusta el offset global y el retardo de cada salida hasta alinear.")
-CALIB_WHERE = ("Offset global: pestaña Show → Luz. Retardo de cada salida: pestaña Salidas. "
-               "Mientras calibras: look 1 en blanco, piso 0, decay 50 ms y modo Pulso.")
+              "Cuenta cuadros entre el golpe audible y el destello: 1 cuadro ≈ 4 ms. Ajusta \"Adelantar / "
+              "atrasar la luz\" y el \"Retraso de esta pantalla\" de cada salida hasta alinear.")
+CALIB_WHERE = ("Adelantar / atrasar la luz: pestaña Show → Luz. Retraso de cada pantalla: pestaña Salidas → "
+               "Salida seleccionada → Avanzado. Mientras calibras: look 1 en blanco, luz mínima 0, duración del "
+               "destello 50 ms y modo Pulso.")
 MIC_HINT = ("Revisa Configuración → Privacidad → Micrófono → "
             "Permitir que las aplicaciones de escritorio accedan")
 RETRY_S, NO_SIGNAL_S, CLIP_S = 3.0, 3.0, 0.5
-METER_W, SWATCH_W, SLIDER_W = 320, 110, 200  # medidas en px lógicos (pasan por px())
-LABEL_W = 17  # ancho (en caracteres) de las etiquetas de fila
+# medidas en px lógicos (pasan por px())
+METER_W, METER_W_NARROW, METER_W_DENSE = 240, 120, 70  # cómoda (1 fila de looks / 2 filas) y densa
+SWATCH_W, SLIDER_W = 110, 190
+METER_Y = (4, 24, 32, 52, 28, 56)          # medidor: barra de nivel, barra de golpe y línea de umbral (y0, y1)
+METER_Y_DENSE = (2, 12, 15, 25, 14, 27)
+SWATCH_H, SWATCH_H_DENSE = 8, 4            # muestra de color sobre cada botón de look
+PREVIEW = (14, 20)                         # cada mitad de la vista previa
+TEXT_W = 330                               # ancho de los textos que se parten en varias líneas
+FRAME_EXTRA = (16, 40)                     # bordes + barra de título de Windows (aprox.)
+LABEL_W = 17  # ancho (en caracteres) de las etiquetas de fila; las más largas se parten en dos líneas
+POS_RE = re.compile(r"^([+-]-?\d+)([+-]-?\d+)$")  # geo_control migrado de v5: solo la posición
+FOCUSABLE = {"Button", "TButton", "Checkbutton", "TCheckbutton", "Radiobutton", "TRadiobutton", "Scale",
+             "TCombobox", "Listbox"}  # con "Navegar con Tab" toman el foco (los campos de texto, siempre)
+# tarjeta -> llaves de config de su parte avanzada (punto • en "Avanzado" si alguna no está en su default)
+ADV_KEYS = {"respuesta": ("flash_limit_hz",), "luz": ("vmin", "gamma", "manual"),
+            "estrobos": ("cierre", "strobe_min_ms"), "teclado": (), "fuente": ("low_priority",),
+            "ganancia": ("ref_db",), "filtro": ("band",), "golpe": ("min_gap", "gate_db", "by_strength"),
+            "tempo": ("bpm_manual", "divisor"), "tranquilo": ("calm_after", "calm_smooth", "calm_base", "calm_depth"),
+            "salida_sel": ()}
 LAST_ERROR = None  # último error no controlado; el loop lento lo muestra en el label de estado
 
 
@@ -60,13 +100,40 @@ def report(exc_type, exc, tb, where="excepción"):
     LAST_ERROR = f"Error: {exc_type.__name__}: {exc}"[:80]
 
 
+def keys_live(fg, global_keys, typing, focused, ctrl, alt):
+    """¿Disparan las teclas de show? Nunca con Ctrl o Alt presionados (Alt+F4 no cambia de modo), ni
+    escribiendo en un campo, ni con el foco en un control ("Navegar con Tab"); y solo con LightHouse al
+    frente, salvo "Teclas siempre activas" (globales). Pura: la prueba el self-check."""
+    return not (ctrl or alt or typing or focused) and (fg or global_keys)
+
+
+def keys_chip(fg, global_keys, paused):
+    """Texto y token de color del aviso "Teclas" de la franja En vivo."""
+    if paused:
+        return "Teclas: en pausa", "warn"
+    if global_keys:
+        return "Teclas: siempre activas", "warn"
+    return ("Teclas: activas", "ok") if fg else ("Teclas: en otra ventana", "fg_muted")
+
+
+def key_label(name):
+    """Nombre de config de una tecla -> texto para la tabla de atajos ("NUMPAD1" -> "Num 1")."""
+    n = str(name).upper()
+    return KEY_NAMES.get(n) or (f"Num {n[6:]}" if n.startswith("NUMPAD") else n)
+
+
+def hexrgb(c):
+    return "#%02x%02x%02x" % c  # colores del show (vista previa): no son tokens del tema
+
+
 class App:
     def __init__(self, headless=False, scaling=None):
         """headless: raíz y ventanas retiradas, sin audio, sin hilo render, sin leer ni escribir config.json y
         sin keep_awake (self-check de la interfaz). scaling: `tk scaling` previo a los widgets (2.0 = 150 %)."""
         import tkinter as tk
+        from tkinter import font as tkfont
         from tkinter import ttk
-        self.tk, self.ttk = tk, ttk
+        self.tk, self.ttk, self.tkfont = tk, ttk, tkfont
         self.headless = headless
 
         self.eng = Engine()
@@ -77,11 +144,12 @@ class App:
         self.scene, self.cfg = Scene(), Cfg()  # el look activo no se persiste: siempre arranca en 1
         self.outputs = []                      # Output (la Salida 1 hereda la ventana Luz de F1–F4)
         self.mons = win32.monitors()
-        self.calib = None                      # valores a restaurar al salir de Calibrar retardo
+        self.calib = None                      # valores a restaurar al salir de Calibrar sincronía
         self.keys = {a: list(v) for a, v in KEYS.items()}
         self.look_hex = {k: list(v[2]) for k, v in LOOKS.items() if v[2]}
         self.vk_actions, self.bump_vks, self.held = {}, (), None
         self.keys_global = False
+        self.key_bump = self.bump_mouse = False  # bump por la tecla F / por el botón (se suman)
         self.vars = {}    # llave -> (var, k, fn, lo, hi)
         self.scales = {}  # llave -> tk.Scale
         self.checks = {}  # atributo del motor -> BooleanVar
@@ -94,6 +162,20 @@ class App:
         self.retry_t = 0.0
         self.was_alive = False
         self.shown = {}             # lo último que put() mandó a cada widget
+        self.typing = False         # foco en un campo de texto: las teclas (GetAsyncKeyState) no disparan looks
+        self.nav_focus = False      # "Navegar con Tab": foco en un control -> teclas en pausa
+        self.loading = False        # True mientras show_output() carga los campos: no escribir de vuelta
+        self.alarm = ""             # aviso de audio para la franja En vivo (error, reconectando…)
+        self.preview = None         # último Frame compuesto para la Salida 1 (lo deja fast(), lo pinta slow())
+        self.cards, self.adv, self.adv_open, self.adv_dirty = {}, {}, {}, {}
+        self.seg_lines = {}         # variable -> [(valor, Frame del subrayado, token de fondo)]
+        self.chip_vis = {}
+        self.layout = self.draw = self.live_n = None  # Layout elegido, Layout dibujado y filas de la franja
+        self.live_drawn = None
+        self.vista = "auto"
+        self.jobs = {}
+        self.sb_on = False
+        self.t_layout = 0.0         # ms de la última recolocación
 
         root = self.root = tk.Tk()
         root.withdraw()  # sin parpadeo mientras se construye; se muestra al final (salvo headless)
@@ -108,336 +190,58 @@ class App:
         root.report_callback_exception = lambda *a: report(*a, where="callback de Tk")
         if not headless:
             win32.keep_awake(True)  # pantalla sin dormirse; quit() y __main__ (finally) lo liberan
-        P, S = self.px, self.sp
-
-        # fila 0: barra de looks · fila 1: indicadores (siempre visibles) + pestañas · fila 2: ayuda.
-        # Pestañas para que la ventana quepa en 1366×768 al 100 % y en 1920×1080 al 150 % (DPI aware)
-        left = ttk.Frame(root, padding=S("md"), style="Bg.TFrame")
-        left.grid(row=1, column=0, sticky="n")
-        self.nb = ttk.Notebook(root, takefocus=0)
-        self.nb.grid(row=1, column=1, sticky="n", padx=(0, S("md")), pady=(S("md"), S("md")))
-        tab = {}
-        for name in ("Show", "Audio", "Salidas"):
-            t = ttk.Frame(self.nb, padding=S("sm"), style="Bg.TFrame")
-            self.nb.add(t, text=f"  {name}  ")
-            tab[name] = [ttk.Frame(t, padding=(S("sm"), 0), style="Bg.TFrame") for _ in range(2)]
-            for i, c in enumerate(tab[name]):
-                c.grid(row=0, column=i, sticky="n")
-        show, aud, outs = tab["Show"], tab["Audio"], tab["Salidas"]
-
-        def box(title, parent):
-            fr = ttk.LabelFrame(parent, text=title, padding=S("md"))
-            fr.pack(fill="x", pady=S("sm"))
-            return fr
-
-        # --- siempre visibles: lecturas, fuente de audio (estado, SIN SEÑAL, SATURA), modo y blackout
-        fr = box("Lecturas", left)
-        self.mw = P(METER_W)                                          # ancho del medidor; ys = alturas de sus barras
-        self.my = tuple(P(v) for v in (4, 24, 32, 52, 28, 56))
-        self.meter = tk.Canvas(fr, width=self.mw, height=self.my[5], highlightthickness=0)
-        self.meter.pack()
-        theme.paint(self.meter, bg="trough")
-        self.bar_l = self.meter.create_rectangle(0, self.my[0], 0, self.my[1], width=0)
-        self.bar_o = self.meter.create_rectangle(0, self.my[2], 0, self.my[3], width=0)
-        self.line = self.meter.create_line(0, self.my[4], 0, self.my[5], width=2)
-        for item, token in ((self.bar_l, "meter_level"), (self.bar_o, "meter_hit"), (self.line, "meter_threshold")):
-            theme.paint(self.meter, item, fill=token)
-        self.reg(self.meter, "vivo.medidor")
-        ttk.Label(fr, text="gris: nivel de banda · blanco: subida (golpe) · rojo: umbral",
-                  style="Muted.TLabel").pack()
-        row = ttk.Frame(fr); row.pack(fill="x")
-        self.dot = tk.Canvas(row, width=P(26), height=P(26), highlightthickness=0)
-        self.dot.pack(side="left")
-        theme.paint(self.dot, bg="surface")
-        self.dot_id = self.dot.create_oval(P(3), P(3), P(23), P(23), width=0)
-        theme.paint(self.dot, self.dot_id, fill="beat_off")  # slow() lo pone en beat_on con cada golpe
-        self.reg(self.dot, "vivo.punto")
-        self.bpm = self.reg(ttk.Label(row, text="-- BPM", style="Big.TLabel"), "vivo.bpm")
-        self.bpm.pack(side="left", padx=S("md"))
-        self.state = self.reg(ttk.Label(row, text="", style="State.TLabel"), "vivo.estado")
-        self.state.pack(side="right")
-        self.look_lbl = self.reg(ttk.Label(fr, text="", style="Big.TLabel"), "vivo.look")
-        self.look_lbl.pack(anchor="w")
-
-        fr = box("Fuente de audio", left)
-        self.dev = self.reg(ttk.Combobox(fr, state="readonly", width=44, takefocus=0), "audio.dispositivo")
-        self.dev.pack(fill="x")
-        self.dev.bind("<<ComboboxSelected>>", lambda e: self.pick_device())
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
-        ttk.Label(row, text="Canal").pack(side="left")
-        self.chan = self.reg(ttk.Combobox(row, state="readonly", values=["Mezcla"], width=9, takefocus=0),
-                             "audio.canal")
-        self.chan.current(0)
-        self.chan.pack(side="left", padx=S("md"))
-        self.chan.bind("<<ComboboxSelected>>", lambda e: self.pick_channel())
-        self.no_sig = self.chip(row, "vivo.sin_senal", "danger_text")
-        self.clip = self.chip(row, "vivo.satura", "warn")
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
-        self.reg(ttk.Button(row, text="Reconectar", command=self.reconnect, takefocus=0),
-                 "audio.reconectar").pack(side="left")
-        self.status = self.reg(ttk.Label(row, text="", wraplength=P(250)), "audio.estado")
-        self.status.pack(side="left", padx=S("md"))
-        self.low_prio = tk.BooleanVar(value=True)
-        self.low_prio.trace_add("write", lambda *_: win32.set_low_priority(self.low_prio.get()))
-        self.reg(ttk.Checkbutton(fr, text="Prioridad baja (laptop DJ)", variable=self.low_prio, takefocus=0),
-                 "audio.prioridad").pack(anchor="w", pady=(S("sm"), 0))
-
-        fr = box("Ganancia", aud[0])
-        self.agc = tk.BooleanVar(value=self.eng.agc)
-        self.checks["agc"] = self.agc
-        row = ttk.Frame(fr); row.pack(fill="x")
-        self.reg(ttk.Radiobutton(row, text="Automática (AGC)", value=True, variable=self.agc, takefocus=0),
-                 "nivel.auto").pack(side="left")
-        self.reg(ttk.Radiobutton(row, text="Fija (la perilla manda)", value=False, variable=self.agc,
-                                 takefocus=0), "nivel.fijo").pack(side="left", padx=S("md"))
-        self.slider(fr, "nivel.ref", "Referencia (dBFS)", "ref_db", -40, 0)
-        self.agc.trace_add("write", lambda *_: self.set_agc())
-        self.set_agc()
-
-        fr = box("Modo", left)
-        self.mode = tk.StringVar(value=self.eng.mode)
-        self.mode.trace_add("write", lambda *_: setattr(self.eng, "mode", self.mode.get()))
-        for i, m in enumerate(MODES, 1):
-            self.reg(ttk.Radiobutton(fr, text=f"F{i} {m.capitalize()}", value=m, variable=self.mode,
-                                     takefocus=0), f"modo.{m}").pack(side="left")
-        self.bo = tk.BooleanVar(value=False)
-        self.bo_btn = self.reg(tk.Checkbutton(
-            fr, text="Blackout", variable=self.bo, indicatoron=False, takefocus=0, padx=S("md"), bd=1,
-            highlightthickness=S("xs"), width=10, command=lambda: setattr(self.scene, "blackout", self.bo.get())),
-            "blackout")
-        self.bo_btn.pack(side="right")
-        self.bo.trace_add("write", lambda *_: self.style_blackout())
-        self.style_blackout()
-
-        fr = box("Teclado", show[0])
-        self.global_keys = tk.BooleanVar(value=False)
-        self.reg(ttk.Checkbutton(fr, text="Teclas globales", variable=self.global_keys, takefocus=0),
-                 "teclas.globales").pack(anchor="w")
-        self.keys_note = ttk.Label(fr, text=LOCAL_NOTE, style="Muted.TLabel", wraplength=P(330))
-        self.keys_note.pack(anchor="w")
-        self.global_keys.trace_add("write", lambda *_: self.set_global_keys())
-
-        fr = box("Filtro (qué escucha el detector de golpe)", aud[0])
-        self.preset = self.reg(ttk.Combobox(fr, state="readonly", values=list(FILTERS), takefocus=0),
-                               "filtro.preset")
-        self.preset.set("Kick (120 Hz)")
-        self.preset.pack(fill="x")
-        self.preset.bind("<<ComboboxSelected>>", lambda e: self.pick_filter())
-        self.band = self.slider(fr, "filtro.corte", "Corte (Hz)", "band", 40, 250, fn=self.band_from_slider)
-
-        fr = box("Golpe", aud[0])
-        self.slider(fr, "golpe.sens", "Sensibilidad (×)", "sens", 1.0, 3.0, res=0.1)
-        self.slider(fr, "golpe.pausa", "Refractario (ms)", "min_gap", 120, 500, k=0.001)
-        self.slider(fr, "golpe.compuerta", "Compuerta (dB)", "gate_db", -60, -30)
-        self.check(fr, "golpe.fuerza", "Intensidad por golpe", "by_strength")
-
-        fr = box("Tempo", aud[1])
-        row = ttk.Frame(fr); row.pack(fill="x")
-        self.sync = tk.StringVar(value=self.eng.sync)
-        self.sync.trace_add("write", lambda *_: setattr(self.eng, "sync", self.sync.get()))
-        self.reg(ttk.Radiobutton(row, text="Cada kick", value="kick", variable=self.sync, takefocus=0),
-                 "tempo.kick").pack(side="left")
-        self.reg(ttk.Radiobutton(row, text="Al tempo (sigue sin kick)", value="tempo", variable=self.sync,
-                                 takefocus=0), "tempo.ritmo").pack(side="left", padx=S("md"))
-        row = ttk.Frame(fr); row.pack(fill="x", pady=S("sm"))
-        ttk.Label(row, text="BPM", width=LABEL_W).pack(side="left")
-        self.src = self.reg(ttk.Combobox(row, state="readonly", values=["Detectado", "Manual / Tap"], width=13,
-                                         takefocus=0), "tempo.fuente")
-        self.src.set("Detectado")
-        self.src.pack(side="left")
-        self.src.bind("<<ComboboxSelected>>", lambda e: setattr(
-            self.eng, "bpm_src", "manual" if self.src.get().startswith("Manual") else "auto"))
-        self.reg(ttk.Button(row, text="Tap [0]", command=self.tap, takefocus=0, width=8),
-                 "tempo.tap").pack(side="left", padx=S("md"))
-        self.slider(fr, "tempo.bpm_manual", "BPM manual", "bpm_manual", 60, 200)
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
-        ttk.Label(row, text="Flash cada", width=LABEL_W).pack(side="left")
-        div = self.div = self.reg(ttk.Combobox(row, state="readonly", values=["1/1", "1/2", "1/4"], width=5,
-                                               takefocus=0), "tempo.divisor")
-        div.set("1/1")
-        div.pack(side="left")
-        div.bind("<<ComboboxSelected>>", lambda e: setattr(self.eng, "divisor", int(div.get()[2:])))
-
-        fr = box("Luz", show[0])
-        self.slider(fr, "luz.decay", "Decay (ms)", "decay", 50, 1000, k=0.001)
-        self.slider(fr, "luz.master", "Master (%)", "vmax", 0, 100, k=0.01)
-        self.slider(fr, "luz.piso", "Piso pulso (%)", "vmin", 0, 50, k=0.01)
-        self.slider(fr, "luz.gamma", "Curva (gamma)", "gamma", 0.5, 3.0, res=0.1)
-        self.slider(fr, "luz.manual", "Manual (%)", "manual", 0, 100, k=0.01)
-        self.presets(fr, "luz.sinc_preset", OFFSETS)
-        self.slider(fr, "luz.offset", "Offset (ms)", "offset", -150, 300, k=0.001, res=5)
-        self.lead = ttk.Label(fr, text="", style="Muted.TLabel")
-        self.lead.pack(anchor="w")
-
-        fr = box("Respuesta", show[1])
-        self.resp = self.presets(fr, "resp.preset", RESPONSE)
-        self.check(fr, "resp.limite", "Limitar destellos", "flash_limit")
-        self.slider(fr, "resp.limite_hz", "Máx. destellos/s", "flash_limit_hz", 3, 10)
-        ttk.Label(fr, text=PHOTO_WARN, style="Warn.TLabel", wraplength=P(330)).pack(anchor="w")
-
-        fr = box("Estrobos (Q–Y)", show[1])
-        self.slider(fr, "estrobo.cierre", "Cierre del golpe", "cierre", 0.2, 0.9, res=0.05)
-        self.slider(fr, "estrobo.min", "Mínimo (ms)", "strobe_min_ms", 20, 120)
-
-        fr = box("Tranquilo", aud[1])
-        self.presets(fr, "calma.preset", CALM)
-        self.slider(fr, "calma.espera", "Entrar tras (s)", "calm_after", 2, 15)
-        self.slider(fr, "calma.suavidad", "Suavizado (s)", "calm_smooth", 1, 3, res=0.1)
-        self.slider(fr, "calma.base", "Nivel base (%)", "calm_base", 0, 60, k=0.01)
-        self.slider(fr, "calma.respira", "Profundidad (%)", "calm_depth", 0, 60, k=0.01)
-
-        fr = box("Color (opcional)", show[1])
-        self.color_mode = self.reg(ttk.Combobox(fr, state="readonly", takefocus=0, values=COLOR_MODES),
-                                   "color.modo")
-        self.color_mode.set("Blanco")
-        self.color_mode.pack(fill="x")
-        self.kelvin = self.slider(fr, "color.kelvin", "Temperatura (K)", None, 2000, 10000, res=100, init=4000,
-                                  key="kelvin")
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
-        ttk.Label(row, text="Paleta", width=LABEL_W).pack(side="left")
-        self.swatch = tk.Canvas(row, width=P(SWATCH_W), height=P(22), highlightthickness=0)
-        self.swatch.pack(side="left")
-        theme.paint(self.swatch, bg="surface")
-        self.reg(self.swatch, "color.paleta")
-        self.reg(ttk.Button(row, text="+", width=3, command=self.add_color, takefocus=0),
-                 "color.mas").pack(side="left", padx=S("xs"))
-        self.reg(ttk.Button(row, text="−", width=3, command=self.pop_color, takefocus=0),
-                 "color.menos").pack(side="left")
-        self.draw_palette()
-
-        # --- pestaña Salidas: lista + campos de la seleccionada (se editan en vivo)
-        fr = box("Salidas", outs[0])
-        self.out_list = self.reg(tk.Listbox(fr, height=MAX_OUTPUTS, width=36, exportselection=False,
-                                            activestyle="none", takefocus=0, bd=0, highlightthickness=1),
-                                 "salidas.lista")
-        theme.paint(self.out_list, bg="surface_alt", fg="fg", selectbackground="accent",
-                    selectforeground="accent_fg", highlightbackground="border_strong", highlightcolor="accent",
-                    font="font.body")
-        self.out_list.pack(fill="x")
-        self.out_list.bind("<<ListboxSelect>>", lambda e: self.show_output())
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
-        self.out_add = self.reg(ttk.Button(row, text="Agregar", command=self.add_output, takefocus=0),
-                                "salidas.agregar")
-        self.out_add.pack(side="left")
-        self.out_del = self.reg(ttk.Button(row, text="Quitar", command=self.del_output, takefocus=0),
-                                "salidas.quitar")
-        self.out_del.pack(side="left", padx=S("md"))
-        self.out_tv = self.reg(ttk.Button(row, text="Agregar TV remota", command=lambda: self.add_output(True),
-                                          takefocus=0), "salidas.tv")
-        self.out_tv.pack(side="left")
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
-        self.reg(ttk.Button(row, text="Identificar", command=self.identify, takefocus=0),
-                 "salidas.identificar").pack(side="left")
-        self.reg(ttk.Button(row, text="Calibrar retardo", command=self.calibrate, takefocus=0),
-                 "salidas.calibrar").pack(side="left", padx=S("md"))
-        ttk.Label(fr, style="Muted.TLabel", wraplength=P(300), text=(
-            "En la salida: doble clic = pantalla completa (en el monitor donde está) / ventana; Esc = ventana. "
-            "Fuera del look 1 (o en \"siempre\") la salida se une al look y oculta el logo.")).pack(
-            anchor="w", pady=(S("md"), 0))
-        self.net_lbl = self.reg(ttk.Label(fr, text="", style="Ok.TLabel", wraplength=P(300)),
-                                "vivo.red")  # estado de las salidas remotas
-        self.net_lbl.pack(anchor="w", pady=(S("md"), 0))
-
-        fr = box("Salida seleccionada", outs[1])
-        self.loading = False  # True mientras show_output() carga los campos: no escribir de vuelta
-
-        def field(wid, label, make, parent=None, **pack):
-            """Fila 'etiqueta + widget'; registra el widget con su id y lo devuelve."""
-            r = ttk.Frame(parent or fr); r.pack(fill="x", pady=S("xs"))
-            ttk.Label(r, text=label, width=LABEL_W).pack(side="left")
-            w = self.reg(make(r), wid)
-            w.pack(side="left", **pack)
-            return w
-
-        self.typing = False  # foco en un campo de texto: las teclas (GetAsyncKeyState) no disparan looks
-        self.o_name = tk.StringVar()
-        ent = field("sal.nombre", "Nombre", lambda r: ttk.Entry(r, textvariable=self.o_name, width=26),
-                    fill="x", expand=True)
-        self.text_entry(ent)
-        self.o_name.trace_add("write", lambda *_: self.edit_output("name", self.o_name.get()))
-        slot = ttk.Frame(fr)  # monitor y pantalla completa (local) | destino y puerto (remota)
-        slot.pack(fill="x")
-        self.loc_fr, self.rem_fr = ttk.Frame(slot), ttk.Frame(slot)
-        self.o_dest = field("sal.destino", "Destino", lambda r: ttk.Combobox(r, values=[net.AUTO], width=26),
-                            self.rem_fr, fill="x", expand=True)
-        self.text_entry(self.o_dest, self.edit_remote)
-        self.o_dest.bind("<<ComboboxSelected>>", lambda e: self.edit_remote())
-        self.o_port = tk.StringVar()
-        ent = field("sal.puerto", "Puerto", lambda r: ttk.Entry(r, textvariable=self.o_port, width=8), self.rem_fr)
-        self.text_entry(ent, self.edit_remote)
-        self.o_mon = field("sal.monitor", "Monitor", lambda r: ttk.Combobox(
-            r, state="readonly", width=30, takefocus=0, postcommand=self.list_monitors), self.loc_fr,
-            fill="x", expand=True)
-        self.o_mon.bind("<<ComboboxSelected>>", lambda e: self.pick_monitor())
-        self.o_full = field("sal.completa", "", lambda r: ttk.Button(
-            r, text="Pantalla completa", takefocus=0, command=lambda: self.sel().set_full(not self.sel().full)),
-            self.loc_fr, fill="x", expand=True)
-        self.o_master = self.out_slider(fr, "sal.master", "Master (%)", "master", 0, 100)
-        self.o_delay = self.out_slider(fr, "sal.retardo", "Retardo extra (ms)", "delay_ms", 0, 200)
-        self.o_content = field("sal.contenido", "Contenido", lambda r: ttk.Combobox(
-            r, state="readonly", values=CONTENT, width=12, takefocus=0))
-        self.o_content.bind("<<ComboboxSelected>>", lambda e: self.edit_output("content", self.o_content.get()))
-        logo_slot = ttk.Frame(fr)
-        logo_slot.pack(fill="x")
-        self.o_logo = tk.StringVar()
-        ent = field("sal.logo", "Logo (PNG)", lambda r: ttk.Entry(r, textvariable=self.o_logo, width=22),
-                    logo_slot, fill="x", expand=True)
-        r = self.logo_row = ent.master
-        self.text_entry(ent, lambda: self.set_logo(self.o_logo.get()))
-        self.reg(ttk.Button(r, text="…", width=3, command=self.browse_logo, takefocus=0),
-                 "sal.logo_buscar").pack(side="left", padx=(S("sm"), 0))
-        self.o_join = field("sal.unirse", "Unirse a looks", lambda r: ttk.Combobox(
-            r, state="readonly", values=JOIN, width=12, takefocus=0))
-        self.o_join.bind("<<ComboboxSelected>>", lambda e: self.edit_output("join", self.o_join.get()))
-        self.out_warn = self.reg(ttk.Label(left, text="", style="BgWarn.TLabel", wraplength=P(330)),
-                                 "vivo.avisos")  # monitor ausente, logo
-        self.out_warn.pack(anchor="w", padx=S("sm"))
-
-        # --- looks (latch): también con el mouse; las teclas se leen en fast() (poll_keys)
-        bar = ttk.Frame(root, padding=(S("lg"), S("md"), S("lg"), 0), style="Bg.TFrame")
-        bar.grid(row=0, column=0, columnspan=2, sticky="ew")
-        self.look_var = tk.StringVar(value=self.scene.look)
-        self.look_btns, self.look_sw = {}, {}
-        for i, lid in enumerate(LOOKS):
-            bar.columnconfigure(i, weight=1)
-            sw = self.look_sw[lid] = tk.Canvas(bar, height=P(8), width=P(40), highlightthickness=0)
-            theme.paint(sw, bg="surface_alt")
-            sw.grid(row=0, column=i, sticky="ew", padx=1)
-            self.look_btns[lid] = self.reg(tk.Radiobutton(
-                bar, value=lid, variable=self.look_var, indicatoron=False, takefocus=0, bd=1,
-                highlightthickness=0, command=lambda lid=lid: self.select_look(lid)), f"look.{lid}")
-            self.look_btns[lid].grid(row=1, column=i, sticky="ew", padx=1)
-        self.look_var.trace_add("write", lambda *_: self.style_looks())
-        self.style_looks()
-
-        ttk.Label(root, style="Legend.TLabel", padding=(S("md"), 0, S("md"), S("md")), text=(
-            "1–7 · Q W E R T Y U · Z: looks (quedan hasta elegir otro) · Espacio: blackout · F (mantener): bump · "
-            "F1–F4: modos · 0: tap · + / −: sensibilidad · Salidas: doble clic = pantalla completa, Esc = ventana")
-                  ).grid(row=2, column=0, columnspan=2)
+        P = self.px
+        root.minsize(P(360), P(72))
+        body_font = tkfont.Font(root=root, font=theme.tok("font.body"))
+        self.label_px = body_font.measure("0") * LABEL_W  # las etiquetas de fila se parten a este ancho
+        # zonas (fases/diseno-ui.md §2.1): 0 barra de looks · 1 franja En vivo · 2 pestañas · 3 tarjetas
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(3, weight=1)
+        self.build_looks()
+        self.build_live()
+        self.build_tabs()
+        self.build_body()
+        self.build_show()
+        self.build_audio()
+        self.build_outputs()
+        self.build_help()
+        root.bind("<FocusIn>", self.on_focus_in)
+        root.bind("<FocusOut>", lambda e: self.set_bump_mouse(False) if self.bump_mouse else None)
+        root.bind("<Escape>", lambda e: root.focus_set())  # devuelve el foco a la ventana (teclas activas)
+        root.bind("<MouseWheel>", self.on_wheel)
 
         # config: los defaults son los valores iniciales de arriba (Engine + UI); lo guardado válido los pisa
-        defaults = self.snapshot()
+        defaults = self.defaults = self.snapshot()
         defaults["outputs"] = [outputs.default_output(1, self.mons)]  # plantilla de cada salida guardada
         cfg = defaults if headless else config.load(defaults)  # headless: nunca lee config.json
         self.apply(cfg)  # aplica también la prioridad (trace de low_prio) y crea las salidas
         self.snap = self.saved = self.snapshot()
+        self.update_dots(self.snap)
         self.dirty_t = None
         self.fast_cmd = root.register(self.fast)
         self.wake, self.running = threading.Event(), not headless
         if headless:
+            self.relayout(1366, 700, force=True)  # completo, 3 columnas (el self-check mide los demás)
             for o in self.outputs:
                 o.win.withdraw()
             return
+        geo, zoom = self.initial_geometry(cfg["geo_control"])
+        root.geometry(geo)
+        self.geo["geo_control"] = geo
+        g = re.match(r"^(\d+)x(\d+)", geo)
+        self.relayout(int(g[1]) / self.scale, int(g[2]) / self.scale, force=True)
+        root.bind_class("Tk", "<Configure>", self.on_root_configure)  # solo la raíz, no sus hijos
         threading.Thread(target=self.waker, name="render", daemon=True).start()
         self.refresh(cfg["device"] or None)
         self.open()
         root.deiconify()
+        if zoom:
+            root.state("zoomed")
         root.update()  # mapea las ventanas ya; luego Control queda por encima de la Salida 1 en ventana
         root.lift()
         self.slow()
         self.autosave()
 
-    # --- widgets
     # --- apariencia y registro
     def px(self, n):
         """px lógicos -> físicos con la escala real de la pantalla."""
@@ -452,17 +256,38 @@ class App:
         self.ids[widget] = wid
         return widget
 
-    def chip(self, parent, wid, color):
-        """Aviso de texto de color sobre una tarjeta (SIN SEÑAL, SATURA): lo vacío no ocupa lugar visible."""
-        lb = self.reg(self.tk.Label(parent, text="", bd=0), wid)
-        theme.paint(lb, bg="surface", fg=color, font="font.title")
-        lb.pack(side="left", padx=self.sp("sm"))
+    def chip(self, parent, wid, color, font="font.title"):
+        """Aviso de la franja En vivo: texto de color sobre surface_alt; vacío = oculto (chip_set)."""
+        lb = self.reg(self.tk.Label(parent, text="", bd=0, padx=self.px(6), pady=self.px(1)), wid)
+        theme.paint(lb, bg="surface_alt", fg=color, font=font)
+        self.chip_vis[lb] = False
         return lb
+
+    def segment(self, parent, var, value, text, wid, under, style="TFrame", command=None):
+        """Segmento (pestañas, Modo): ttk.Radiobutton estilo Toolbutton con subrayado de acento al elegirlo."""
+        fr = self.ttk.Frame(parent, style=style)
+        rb = self.reg(self.ttk.Radiobutton(fr, text=text, value=value, variable=var, style="Seg.Toolbutton",
+                                           takefocus=0, command=command), wid)
+        rb.pack(fill="x")
+        line = self.tk.Frame(fr, height=self.sp("xs"), bd=0, highlightthickness=0)
+        line.pack(fill="x")
+        fr.pack(side="left", padx=(0, 1))
+        lines = self.seg_lines.setdefault(str(var), [])
+        if not lines:
+            var.trace_add("write", lambda *_: self.style_segments(var))
+        lines.append((value, line, under))
+        theme.paint(line, bg=under)
+        return rb
+
+    def style_segments(self, var):
+        cur = var.get()
+        for value, line, under in self.seg_lines[str(var)]:
+            theme.paint(line, bg="accent" if value == cur else under)
 
     def style_scale(self, sc):
         theme.paint(sc, bg="surface", fg="fg", troughcolor="trough", activebackground="accent",
                     highlightbackground="surface", highlightcolor="focus", font="font.small")
-        sc.configure(bd=1, highlightthickness=0, sliderrelief="raised", relief="flat")
+        sc.configure(bd=1, highlightthickness=self.sp("xs"), sliderrelief="raised", relief="flat")
 
     def style_looks(self):
         """Botones de look: el activo en acento con negrita (el hover es el estado active nativo de Tk)."""
@@ -482,13 +307,757 @@ class App:
                     activeforeground="danger_fg" if on else "danger_text", selectcolor="danger",
                     highlightbackground="danger", highlightcolor="focus", font="font.title")
 
+    def style_bump(self, on):
+        """Bump: activo (acento) mientras se mantiene, con el ratón o con la tecla F."""
+        theme.paint(self.bump_btn, bg="accent" if on else "surface_alt", fg="accent_fg" if on else "fg",
+                    activebackground="accent" if on else "hover", activeforeground="accent_fg" if on else "fg",
+                    highlightbackground="surface", highlightcolor="focus", font="font.title")
+
+    # --- zona A: barra de looks
+    def build_looks(self):
+        tk, P = self.tk, self.px
+        bar = self.bar = self.ttk.Frame(self.root, style="Bg.TFrame", padding=(0, 0, 0, self.sp("xs")))
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.look_var = tk.StringVar(value=self.scene.look)
+        self.look_btns, self.look_sw = {}, {}
+        for lid in LOOKS:  # latch: también con el ratón; las teclas se leen en fast() (poll_keys)
+            sw = self.look_sw[lid] = tk.Canvas(bar, height=P(SWATCH_H), width=P(10), highlightthickness=0, bd=0)
+            theme.paint(sw, bg="surface_alt")
+            b = self.look_btns[lid] = self.reg(tk.Radiobutton(
+                bar, value=lid, variable=self.look_var, indicatoron=False, takefocus=0, bd=1,
+                highlightthickness=self.sp("xs"), command=lambda lid=lid: self.select_look(lid)), f"look.{lid}")
+            theme.paint(b, highlightbackground="bg", highlightcolor="focus")
+        self.look_var.trace_add("write", lambda *_: self.style_looks())
+        self.style_looks()
+
+    def look_text(self, lid, dense):
+        k = self.keys[lid][0]
+        if dense:
+            return f"{k} {LOOK_SHORT[lid]}" if lid in LOOK_NAMED_DENSE else k
+        return f"{k}\n{LOOK_SHORT[lid]}"
+
+    def layout_looks(self, lay):
+        """1 fila (15) o 2 (8 + 7: 1–7 Q arriba, W–Z abajo); el orden nunca cambia. Densa: botones de una
+        línea con la muestra como banda fina."""
+        dense, per = lay.dense, len(LOOKS) if lay.look_rows == 1 else 8
+        bw = self.px(theme.tok("size.look_w_dense" if dense else "size.look_w"))
+        bh = self.px(theme.tok("size.look_h_dense" if dense else "size.look_h"))
+        for i, lid in enumerate(LOOKS):
+            r, c = divmod(i, per)
+            sw = self.look_sw[lid]
+            sw.configure(height=self.px(SWATCH_H_DENSE if dense else SWATCH_H))
+            sw.grid(row=2 * r, column=c, sticky="ew", padx=self.sp("xs"))
+            self.look_btns[lid].configure(text=self.look_text(lid, dense))
+            self.look_btns[lid].grid(row=2 * r + 1, column=c, sticky="nsew")
+        for c in range(len(LOOKS)):
+            on = c < per
+            self.bar.columnconfigure(c, weight=1 if on else 0, minsize=bw if on else 0,
+                                     uniform="look" if on and not dense else "")
+        self.bar.rowconfigure(1, minsize=bh)
+        self.bar.rowconfigure(3, minsize=bh if lay.look_rows == 2 else 0)
+
+    # --- zona B: franja En vivo
+    def build_live(self):
+        tk, ttk, P, S = self.tk, self.ttk, self.px, self.sp
+        lv = self.live = ttk.Frame(self.root, padding=(S("md"), S("sm")))
+        lv.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self.live_fr = [ttk.Frame(lv) for _ in range(3)]  # filas; antes que los items: quedan debajo de ellos
+        self.dot = tk.Canvas(lv, width=P(26), height=P(26), highlightthickness=0)
+        theme.paint(self.dot, bg="surface")
+        self.dot_id = self.dot.create_oval(P(3), P(3), P(23), P(23), width=0)
+        theme.paint(self.dot, self.dot_id, fill="beat_off")  # slow() lo pone en beat_on con cada golpe
+        self.reg(self.dot, "vivo.punto")
+        self.bpm = self.reg(ttk.Label(lv, text="-- BPM", style="Big.TLabel"), "vivo.bpm")
+        self.mw, self.my = P(METER_W), tuple(P(v) for v in METER_Y)  # ancho y alturas de las barras
+        self.meter = tk.Canvas(lv, width=self.mw, height=self.my[5], highlightthickness=0)
+        theme.paint(self.meter, bg="trough")
+        self.bar_l = self.meter.create_rectangle(0, 0, 0, 0, width=0)
+        self.bar_o = self.meter.create_rectangle(0, 0, 0, 0, width=0)
+        self.line = self.meter.create_line(0, 0, 0, 0, width=2)
+        for item, token in ((self.bar_l, "meter_level"), (self.bar_o, "meter_hit"), (self.line, "meter_threshold")):
+            theme.paint(self.meter, item, fill=token)
+        self.reg(self.meter, "vivo.medidor")
+        self.look_lbl = self.reg(ttk.Label(lv, text="", style="Big.TLabel"), "vivo.look")
+        self.state = self.reg(ttk.Label(lv, text="", style="State.TLabel"), "vivo.estado")
+        prev = self.prev = self.reg(tk.Frame(lv, bd=0, highlightthickness=1), "vivo.previa")
+        theme.paint(prev, bg="trough", highlightbackground="border_strong", highlightcolor="border_strong")
+        self.prev_lr = [tk.Frame(prev, width=P(PREVIEW[0]), height=P(PREVIEW[1]), bd=0, highlightthickness=0,
+                                 bg=hexrgb(BLACK)) for _ in range(2)]
+        for f in self.prev_lr:
+            f.pack(side="left")
+        # avisos (chips): Teclas siempre; SIN SEÑAL, SATURA, audio, TV remota y salidas, solo si aplican
+        self.chips = ttk.Frame(lv)
+        self.keys_chip = self.chip(self.chips, "vivo.teclas", "ok", font="font.small")
+        self.keys_chip.configure(cursor="hand2")
+        self.keys_chip.bind("<Button-1>", self.to_front)  # trae LightHouse al frente y no cambia nada más
+        self.no_sig = self.chip(self.chips, "vivo.sin_senal", "danger_text")
+        self.clip = self.chip(self.chips, "vivo.satura", "warn")
+        self.audio_chip = self.chip(self.chips, "vivo.audio", "danger_text")
+        self.net_chip = self.chip(self.chips, "vivo.red", "ok", font="font.small")
+        self.warn_chip = self.chip(self.chips, "vivo.avisos", "warn", font="font.small")
+        self.chip_list = [self.keys_chip, self.no_sig, self.clip, self.audio_chip, self.net_chip, self.warn_chip]
+        # Modo: segmentos (cómoda) o lista desplegable (densa, ahorra ancho); los dos mueven self.mode
+        self.mode = tk.StringVar(value=self.eng.mode)
+        self.mode_seg = ttk.Frame(lv)
+        ttk.Label(self.mode_seg, text="Modo", style="Muted.TLabel").pack(side="left", padx=(0, S("sm")))
+        for m, text in zip(MODES, MODE_LABELS):
+            self.segment(self.mode_seg, self.mode, m, text, f"modo.{m}", under="surface")
+        self.mode_cb = self.reg(ttk.Combobox(lv, state="readonly", values=MODE_SHORT, takefocus=0,
+                                             width=max(map(len, MODE_SHORT))), "modo.selector")
+        self.mode_cb.bind("<<ComboboxSelected>>", lambda e: self.mode.set(MODES[self.mode_cb.current()]))
+        self.mode.trace_add("write", lambda *_: self.set_mode())
+        self.vista_fr = ttk.Frame(lv)
+        self.vista_lbl = ttk.Label(self.vista_fr, text="Vista", style="Muted.TLabel")  # solo en cómoda
+        self.vista_cb = self.reg(ttk.Combobox(self.vista_fr, state="readonly", values=list(VISTAS.values()),
+                                              takefocus=0, width=max(map(len, VISTAS.values()))), "vista.selector")
+        self.vista_cb.pack(side="right")
+        self.vista_cb.bind("<<ComboboxSelected>>", lambda e: self.set_vista(list(VISTAS)[self.vista_cb.current()]))
+        self.bump_btn = self.reg(tk.Button(lv, text="Bump", takefocus=0, bd=1, padx=S("lg"), pady=S("xs"),
+                                           highlightthickness=S("xs")), "bump")
+        self.bump_btn.bind("<ButtonPress-1>", lambda e: self.set_bump_mouse(True))
+        self.bump_btn.bind("<ButtonRelease-1>", lambda e: self.set_bump_mouse(False))
+        self.style_bump(False)
+        self.bo = tk.BooleanVar(value=False)
+        self.bo_btn = self.reg(tk.Checkbutton(
+            lv, text="Blackout", variable=self.bo, indicatoron=False, takefocus=0, padx=S("md"), pady=S("xs"),
+            bd=1, highlightthickness=S("xs"), width=10,
+            command=lambda: setattr(self.scene, "blackout", self.bo.get())), "blackout")
+        self.bo.trace_add("write", lambda *_: self.style_blackout())
+        self.style_blackout()
+        self.live_items = [self.dot, self.bpm, self.meter, self.look_lbl, self.state, self.prev, self.chips,
+                           self.mode_seg, self.mode_cb, self.vista_fr, self.bump_btn, self.bo_btn]
+        self.pack_chips()
+        self.style_segments(self.mode)
+
+    def fit_chars(self, font_token, texts):
+        """Ancho (en caracteres, como mide ttk) para que quepa el texto más largo: la franja no salta."""
+        f = self.tkfont.Font(root=self.root, font=theme.tok(font_token))
+        return math.ceil(max(f.measure(t) for t in texts) / f.measure("0"))
+
+    def layout_live(self, lay, rows):
+        """Cómoda: 3 filas (señal y look · estado y avisos · Modo, Vista, Bump y Blackout). Densa: 1 fila
+        (ancho >= 1100) o 2 (arriba punto, BPM, medidor, look, vista previa y Blackout; abajo estado, avisos,
+        Modo, Bump y Vista). Blackout va a la derecha y se empaca primero: si falta ancho, nunca se recorta."""
+        S, d, dense = self.sp, self, lay.dense
+        for w in self.live_items:
+            w.pack_forget()
+        for r in self.live_fr:
+            r.pack_forget()
+        big = "Live.TLabel" if dense else "Big.TLabel"
+        font = "font.title" if dense else "font.big"
+        self.bpm.configure(style=big, width=self.fit_chars(font, ("-- BPM", "200 BPM" + BPM_MANUAL[dense])))
+        looks = [f"Look {self.keys[lid][0]} · {name}" for lid, (name, *_) in LOOKS.items()]
+        self.look_lbl.configure(style=big, width=self.fit_chars(font, looks))
+        self.state.configure(width=self.fit_chars("font.title", [s.replace(AUTO_PREFIX, "") if dense else s
+                                                                  for s in STATES]))
+        self.mw = self.px(METER_W_DENSE if dense else METER_W if lay.look_rows == 1 else METER_W_NARROW)
+        self.my = tuple(self.px(v) for v in (METER_Y_DENSE if dense else METER_Y))
+        self.meter.configure(width=self.mw, height=self.my[5])
+        if dense:
+            self.vista_lbl.pack_forget()
+        else:
+            self.vista_lbl.pack(side="left", padx=(0, S("sm")))
+        if not dense:
+            spec = [([d.dot, d.bpm, d.meter, d.look_lbl, d.prev], []), ([d.state, d.chips], []),
+                    ([d.mode_seg], [d.bo_btn, d.bump_btn, d.vista_fr])]
+        elif rows == 1:
+            spec = [([d.dot, d.bpm, d.meter, d.look_lbl, d.state, d.prev, d.chips, d.mode_cb, d.vista_fr],
+                     [d.bo_btn, d.bump_btn])]
+        else:
+            spec = [([d.dot, d.bpm, d.meter, d.look_lbl, d.prev], [d.bo_btn]),
+                    ([d.state, d.chips, d.mode_cb, d.bump_btn, d.vista_fr], [])]
+        gap = S("sm") if dense else S("md")
+        for i, (left, right) in enumerate(spec):
+            row = self.live_fr[i]
+            row.pack(fill="x", pady=(S("sm") if i else 0, 0))
+            for w in right:  # primero: pack recorta a los últimos empacados
+                w.pack(in_=row, side="right", padx=(gap, 0))
+            for w in left:
+                w.pack(in_=row, side="left", padx=(0, gap))
+        i, left = next((i, left) for i, (left, _) in enumerate(spec) if d.state in left)
+        self.state_at = (self.live_fr[i], left[left.index(d.state) + 1])  # fila y vecino (para volver a ponerlo)
+        self.pack_chips()
+
+    def pack_chips(self):
+        """Los avisos vacíos no ocupan lugar: se empacan solo los visibles, siempre en el mismo orden.
+        En densa, una alarma (SIN SEÑAL, SATURA, audio) ocupa el lugar del estado del modo."""
+        for c in self.chip_list:
+            c.pack_forget()
+        for c in self.chip_list:
+            if self.chip_vis[c] or c is self.keys_chip:
+                c.pack(side="left", padx=(0, self.sp("sm")))
+        if self.draw is None:
+            return
+        alarm = any(self.chip_vis[c] for c in (self.no_sig, self.clip, self.audio_chip))
+        if self.draw.dense and alarm:
+            self.state.pack_forget()
+        elif not self.state.winfo_manager():
+            row, nxt = self.state_at
+            self.state.pack(in_=row, side="left", before=nxt, padx=(0, self.sp("sm" if self.draw.dense else "md")))
+
+    def chip_set(self, lb, text, token=None):
+        """Texto (y color) de un aviso, solo si cambió; vacío = oculto."""
+        key = ("chip", str(lb))
+        if self.shown.get(key) == (text, token):
+            return
+        self.shown[key] = (text, token)
+        lb.configure(text=text)
+        if token:
+            theme.paint(lb, fg=token)
+        if bool(text) != self.chip_vis[lb]:
+            self.chip_vis[lb] = bool(text)
+            self.pack_chips()
+
+    # --- zona C: pestañas
+    def build_tabs(self):
+        S = self.sp
+        tb = self.tabbar = self.ttk.Frame(self.root, style="Bg.TFrame", padding=(S("md"), S("md"), S("md"), 0))
+        tb.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.tab_var = self.tk.StringVar(value="show")
+        for tid, name in TABS.items():
+            self.segment(tb, self.tab_var, tid, f"  {name}  ", f"tab.{tid}", under="bg", style="Bg.TFrame",
+                         command=self.show_tab)
+        self.style_segments(self.tab_var)
+
+    # --- zona D: cuerpo de tarjetas (Canvas estático: solo se mueve al desplazar)
+    def build_body(self):
+        tk, ttk, S = self.tk, self.ttk, self.sp
+        cv = self.body_cv = tk.Canvas(self.root, highlightthickness=0, bd=0, width=1, height=1,
+                                      yscrollincrement=self.px(24))
+        theme.paint(cv, bg="bg")
+        cv.grid(row=3, column=0, sticky="nsew")
+        self.body_sb = ttk.Scrollbar(self.root, orient="vertical", command=cv.yview, takefocus=0)
+        cv.configure(yscrollcommand=self.body_sb.set)
+        body = self.body = ttk.Frame(cv, style="Bg.TFrame", padding=(S("sm"), S("sm"), S("sm"), S("sm")))
+        self.body_win = cv.create_window(0, 0, window=body, anchor="nw")
+        # columnas: se crean antes que las tarjetas (quedan debajo) y cada tarjeta se coloca en una con grid(in_=)
+        self.colfr = [ttk.Frame(body, style="Bg.TFrame") for _ in range(layout.MAX_COLS)]
+        for cf in self.colfr:
+            cf.columnconfigure(0, weight=1)
+        cv.bind("<Configure>", self.on_body_view)
+        body.bind("<Configure>", self.on_body_view)
+
+    def card(self, cid, title, basic=True):
+        """Tarjeta (hija del contenedor único): devuelve el marco de su parte básica (None si no tiene)."""
+        fr = self.cards[cid] = self.ttk.LabelFrame(self.body, text=title, padding=self.sp("md"))
+        if not basic:
+            return None
+        b = self.ttk.Frame(fr)
+        b.pack(fill="x")
+        return b
+
+    def advanced(self, cid):
+        """Botón "Avanzado ▸" de la tarjeta y el marco (plegado) de su parte avanzada."""
+        fr = self.cards[cid]
+        btn = self.reg(self.ttk.Button(fr, text="Avanzado ▸", style="Link.TButton", takefocus=0,
+                                       command=lambda: self.toggle_adv(cid)), f"avanzado.{cid}")
+        btn.pack(anchor="w", fill="x", pady=(self.sp("xs"), 0))
+        a = self.ttk.Frame(fr)
+        self.adv[cid], self.adv_open[cid], self.adv_dirty[cid] = (btn, a), False, False
+        return a
+
+    def set_adv(self, cid, on):
+        self.adv_open[cid] = bool(on)
+        btn, a = self.adv[cid]
+        if on:
+            a.pack(fill="x", after=btn)
+        else:
+            a.pack_forget()
+        btn.configure(text=("Avanzado ▾" if on else "Avanzado ▸") + (" •" if self.adv_dirty[cid] else ""))
+
+    def toggle_adv(self, cid):
+        self.set_adv(cid, not self.adv_open[cid])  # el alto nuevo llega por <Configure> (on_body_view)
+
+    def update_dots(self, s):
+        """Punto • en "Avanzado" si algún valor de esa parte no está en su default."""
+        d, o = self.defaults, (self.sel() if self.outputs else None)
+        for cid, keys in ADV_KEYS.items():
+            dirty = any(s[k] != d[k] for k in keys)
+            if cid == "teclado":
+                dirty = s["ui"]["tab_nav"] != d["ui"]["tab_nav"]
+            elif cid == "salida_sel":
+                dirty = bool(o) and (o.delay_ms != 0 or (o.remote and o.port != net.PORT))
+            if dirty != self.adv_dirty[cid]:
+                self.adv_dirty[cid] = dirty
+                self.set_adv(cid, self.adv_open[cid])
+
+    def row(self, parent, label):
+        """Fila 'etiqueta + widgets' (la etiqueta se parte en dos líneas si no cabe)."""
+        r = self.ttk.Frame(parent)
+        r.pack(fill="x", pady=self.sp("xs"))
+        self.ttk.Label(r, text=label, width=LABEL_W, wraplength=self.label_px).pack(side="left")
+        return r
+
+    def field(self, parent, wid, label, make, **pack):
+        """Fila 'etiqueta + widget'; registra el widget con su id y lo devuelve."""
+        w = self.reg(make(self.row(parent, label)), wid)
+        w.pack(side="left", **pack)
+        return w
+
+    def note(self, parent, text="", style="Muted.TLabel"):
+        lb = self.ttk.Label(parent, text=text, style=style, wraplength=self.px(TEXT_W))
+        if text:
+            lb.pack(anchor="w", pady=(self.sp("xs"), 0))
+        return lb
+
+    def note_set(self, lb, text):
+        """Texto de una nota que cambia en vivo (solo si cambió); vacía no ocupa una línea en la tarjeta.
+        Las notas vivas van al final de su marco: al volver a mostrarse quedan en el mismo lugar."""
+        key = ("note", str(lb))
+        if self.shown.get(key) == text:
+            return
+        self.shown[key] = text
+        lb.config(text=text)
+        if not text:
+            lb.pack_forget()
+        elif not lb.winfo_manager():
+            lb.pack(anchor="w", pady=(self.sp("xs"), 0))
+
+    # --- pestaña Show
+    def build_show(self):
+        tk, ttk, S = self.tk, self.ttk, self.sp
+        f = self.card("respuesta", "Respuesta")
+        self.resp = self.presets(f, "resp.preset", RESPONSE)
+        self.slider(f, "golpe.sens", "Sensibilidad (×)", "sens", 1.0, 3.0, res=0.1)
+        self.limit_cb = self.check(f, "resp.limite", "Limitar destellos", "flash_limit")
+        self.photo = ttk.Label(f, text=PHOTO_WARN, style="Warn.TLabel", wraplength=self.px(TEXT_W))
+        self.checks["flash_limit"].trace_add("write", lambda *_: self.show_photo())  # visible sin el límite
+        a = self.advanced("respuesta")
+        self.slider(a, "resp.limite_hz", "Máx. destellos/s", "flash_limit_hz", 3, 10)
+
+        f = self.card("luz", "Luz")
+        self.slider(f, "luz.master", "Brillo general (%)", "vmax", 0, 100, k=0.01)
+        self.slider(f, "luz.decay", "Duración del destello (ms)", "decay", 50, 1000, k=0.001)
+        self.presets(f, "luz.sinc_preset", OFFSETS)
+        self.slider(f, "luz.offset", "Adelantar / atrasar la luz (ms)", "offset", -150, 300, k=0.001, res=5)
+        self.lead = self.note(f)
+        a = self.advanced("luz")
+        self.slider(a, "luz.piso", "Luz mínima entre golpes (%)", "vmin", 0, 50, k=0.01)
+        self.slider(a, "luz.gamma", "Curva de brillo", "gamma", 0.5, 3.0, res=0.1)
+        self.slider(a, "luz.manual", "Brillo en modo Manual (%)", "manual", 0, 100, k=0.01)
+
+        f = self.card("color", "Color del look 1")
+        self.color_mode = self.field(f, "color.modo", "Tipo de color", lambda r: ttk.Combobox(
+            r, state="readonly", takefocus=0, values=COLOR_MODES), fill="x", expand=True)
+        self.color_mode.set("Blanco")
+        self.kelvin = self.slider(f, "color.kelvin", "Temperatura (K)", None, 2000, 10000, res=100, init=4000,
+                                  key="kelvin")
+        r = self.row(f, "Paleta")
+        self.swatch = tk.Canvas(r, width=self.px(SWATCH_W), height=self.px(22), highlightthickness=0)
+        self.swatch.pack(side="left")
+        theme.paint(self.swatch, bg="surface")
+        self.reg(self.swatch, "color.paleta")
+        self.reg(ttk.Button(r, text="+", width=3, command=self.add_color, takefocus=0),
+                 "color.mas").pack(side="left", padx=S("xs"))
+        self.reg(ttk.Button(r, text="−", width=3, command=self.pop_color, takefocus=0),
+                 "color.menos").pack(side="left")
+        self.draw_palette()
+
+        self.card("estrobos", "Estrobos Q–Y", basic=False)
+        a = self.advanced("estrobos")
+        self.slider(a, "estrobo.cierre", "Cuándo se apaga el estrobo", "cierre", 0.2, 0.9, res=0.05)
+        self.slider(a, "estrobo.min", "Duración mínima (ms)", "strobe_min_ms", 20, 120)
+
+        f = self.card("teclado", "Teclado")
+        self.global_keys = tk.BooleanVar(value=False)
+        self.reg(ttk.Checkbutton(f, text="Teclas siempre activas (globales)", variable=self.global_keys,
+                                 takefocus=0), "teclas.globales").pack(anchor="w")
+        self.keys_note = self.note(f, LOCAL_NOTE)
+        self.global_keys.trace_add("write", lambda *_: self.set_global_keys())
+        a = self.advanced("teclado")
+        self.tab_nav = tk.BooleanVar(value=False)
+        self.reg(ttk.Checkbutton(a, text="Navegar con Tab", variable=self.tab_nav, takefocus=0),
+                 "teclas.tab").pack(anchor="w")
+        self.note(a, "Tab recorre los controles; mientras uno tiene el foco, las teclas de show quedan en "
+                     "pausa. Esc las devuelve.")
+        self.tab_nav.trace_add("write", lambda *_: self.set_tab_nav())
+
+    # --- pestaña Audio
+    def build_audio(self):
+        tk, ttk, S = self.tk, self.ttk, self.sp
+        f = self.card("fuente", "Fuente de audio")
+        self.dev = self.reg(ttk.Combobox(f, state="readonly", width=44, takefocus=0), "audio.dispositivo")
+        self.dev.pack(fill="x")
+        self.dev.bind("<<ComboboxSelected>>", lambda e: self.pick_device())
+        self.chan = self.field(f, "audio.canal", "Canal", lambda r: ttk.Combobox(
+            r, state="readonly", values=["Mezcla"], width=9, takefocus=0))
+        self.chan.current(0)
+        self.chan.bind("<<ComboboxSelected>>", lambda e: self.pick_channel())
+        r = ttk.Frame(f)
+        r.pack(fill="x", pady=(S("xs"), 0))
+        self.reg(ttk.Button(r, text="Reconectar", command=self.reconnect, takefocus=0),
+                 "audio.reconectar").pack(side="left", anchor="n")
+        self.status = self.reg(ttk.Label(r, text="", wraplength=self.px(240)), "audio.estado")
+        self.status.pack(side="left", padx=S("md"))
+        a = self.advanced("fuente")
+        self.low_prio = tk.BooleanVar(value=True)
+        self.low_prio.trace_add("write", lambda *_: win32.set_low_priority(self.low_prio.get()))
+        self.reg(ttk.Checkbutton(a, text="Dar prioridad a rekordbox", variable=self.low_prio, takefocus=0),
+                 "audio.prioridad").pack(anchor="w")
+
+        f = self.card("ganancia", "Nivel de entrada")
+        self.agc = tk.BooleanVar(value=self.eng.agc)
+        self.checks["agc"] = self.agc
+        self.reg(ttk.Radiobutton(f, text="Automático", value=True, variable=self.agc, takefocus=0),
+                 "nivel.auto").pack(anchor="w")
+        self.reg(ttk.Radiobutton(f, text="Fijo (manda la perilla del mezclador)", value=False, variable=self.agc,
+                                 takefocus=0), "nivel.fijo").pack(anchor="w")
+        a = self.advanced("ganancia")
+        self.slider(a, "nivel.ref", "Nivel de referencia (dB)", "ref_db", -40, 0)
+        self.agc.trace_add("write", lambda *_: self.set_agc())
+        self.set_agc()
+
+        f = self.card("filtro", "Qué escucha")
+        self.preset = self.reg(ttk.Combobox(f, state="readonly", values=list(FILTERS), takefocus=0),
+                               "filtro.preset")
+        self.preset.set("Kick (120 Hz)")
+        self.preset.pack(fill="x")
+        self.preset.bind("<<ComboboxSelected>>", lambda e: self.pick_filter())
+        a = self.advanced("filtro")
+        self.band = self.slider(a, "filtro.corte", "Hasta qué frecuencia (Hz)", "band", 40, 250,
+                                fn=self.band_from_slider)
+
+        self.card("golpe", "Golpe", basic=False)
+        a = self.advanced("golpe")
+        self.slider(a, "golpe.pausa", "Pausa mínima entre golpes (ms)", "min_gap", 120, 500, k=0.001)
+        self.slider(a, "golpe.compuerta", "Ignorar sonido por debajo de (dB)", "gate_db", -60, -30)
+        self.check(a, "golpe.fuerza", "Golpes fuertes brillan más", "by_strength")
+
+        f = self.card("tempo", "Ritmo")
+        self.sync = tk.StringVar(value=self.eng.sync)
+        self.sync.trace_add("write", lambda *_: setattr(self.eng, "sync", self.sync.get()))
+        self.reg(ttk.Radiobutton(f, text="En cada golpe", value="kick", variable=self.sync, takefocus=0),
+                 "tempo.kick").pack(anchor="w")
+        self.reg(ttk.Radiobutton(f, text="Al ritmo (sigue aunque no haya golpe)", value="tempo",
+                                 variable=self.sync, takefocus=0), "tempo.ritmo").pack(anchor="w")
+        r = self.row(f, "BPM")
+        self.src = self.reg(ttk.Combobox(r, state="readonly", values=["Detectado", "Manual / Tap"], width=13,
+                                         takefocus=0), "tempo.fuente")
+        self.src.set("Detectado")
+        self.src.pack(side="left")
+        self.src.bind("<<ComboboxSelected>>", lambda e: setattr(
+            self.eng, "bpm_src", "manual" if self.src.get().startswith("Manual") else "auto"))
+        self.reg(ttk.Button(f, text="Marcar el ritmo [0]", command=self.tap, takefocus=0),
+                 "tempo.tap").pack(anchor="w", pady=(S("xs"), 0))
+        a = self.advanced("tempo")
+        self.slider(a, "tempo.bpm_manual", "BPM manual", "bpm_manual", 60, 200)
+        div = self.div = self.field(a, "tempo.divisor", "Un destello cada", lambda r: ttk.Combobox(
+            r, state="readonly", values=["1/1", "1/2", "1/4"], width=5, takefocus=0))
+        div.set("1/1")
+        div.bind("<<ComboboxSelected>>", lambda e: setattr(self.eng, "divisor", int(div.get()[2:])))
+
+        f = self.card("tranquilo", "Calma")
+        self.presets(f, "calma.preset", CALM)
+        a = self.advanced("tranquilo")
+        self.slider(a, "calma.espera", "Esperar sin golpes (s)", "calm_after", 2, 15)
+        self.slider(a, "calma.suavidad", "Suavidad del cambio (s)", "calm_smooth", 1, 3, res=0.1)
+        self.slider(a, "calma.base", "Brillo en calma (%)", "calm_base", 0, 60, k=0.01)
+        self.slider(a, "calma.respira", "Cuánto respira (%)", "calm_depth", 0, 60, k=0.01)
+
+    # --- pestaña Salidas: lista + campos de la seleccionada (se editan en vivo)
+    def build_outputs(self):
+        tk, ttk, S = self.tk, self.ttk, self.sp
+        f = self.card("salidas", "Salidas")
+        self.out_list = self.reg(tk.Listbox(f, height=MAX_OUTPUTS, width=36, exportselection=False,
+                                            activestyle="none", takefocus=0, bd=0, highlightthickness=1),
+                                 "salidas.lista")
+        theme.paint(self.out_list, bg="surface_alt", fg="fg", selectbackground="accent",
+                    selectforeground="accent_fg", highlightbackground="border_strong", highlightcolor="accent",
+                    font="font.body")
+        self.out_list.pack(fill="x")
+        self.out_list.bind("<<ListboxSelect>>", lambda e: self.show_output())
+        r = ttk.Frame(f)
+        r.pack(fill="x", pady=(S("sm"), 0))
+        self.out_add = self.reg(ttk.Button(r, text="Agregar", command=self.add_output, takefocus=0),
+                                "salidas.agregar")
+        self.out_add.pack(side="left")
+        self.out_del = self.reg(ttk.Button(r, text="Quitar", command=self.del_output, takefocus=0),
+                                "salidas.quitar")
+        self.out_del.pack(side="left", padx=S("md"))
+        self.out_tv = self.reg(ttk.Button(r, text="Agregar TV remota", command=lambda: self.add_output(True),
+                                          takefocus=0), "salidas.tv")
+        self.out_tv.pack(side="left")
+        r = ttk.Frame(f)
+        r.pack(fill="x", pady=(S("sm"), 0))
+        self.reg(ttk.Button(r, text="Identificar pantallas", command=self.identify, takefocus=0),
+                 "salidas.identificar").pack(side="left")
+        self.reg(ttk.Button(r, text="Calibrar sincronía", command=self.calibrate, takefocus=0),
+                 "salidas.calibrar").pack(side="left", padx=S("md"))
+        self.note(f, "En la salida: doble clic = pantalla completa (en el monitor donde está) / ventana; "
+                     "Esc = ventana. Fuera del look 1 (o en \"siempre\") la salida sigue el look y oculta el logo.")
+        self.net_lbl = self.note(f, style="Ok.TLabel")   # estado de las salidas remotas (completo)
+        self.out_warn = self.note(f, style="Warn.TLabel")  # avisos de las salidas (completos)
+
+        f = self.card("salida_sel", "Salida seleccionada")
+        self.o_name = tk.StringVar()
+        ent = self.field(f, "sal.nombre", "Nombre", lambda r: ttk.Entry(r, textvariable=self.o_name, width=26),
+                         fill="x", expand=True)
+        self.text_entry(ent)
+        self.o_name.trace_add("write", lambda *_: self.edit_output("name", self.o_name.get()))
+        slot = ttk.Frame(f)  # monitor y pantalla completa (local) | destino (remota)
+        slot.pack(fill="x")
+        self.loc_fr, self.rem_fr = ttk.Frame(slot), ttk.Frame(slot)
+        self.o_dest = self.field(self.rem_fr, "sal.destino", "Destino", lambda r: ttk.Combobox(
+            r, values=[net.AUTO], width=26), fill="x", expand=True)
+        self.text_entry(self.o_dest, self.edit_remote)
+        self.o_dest.bind("<<ComboboxSelected>>", lambda e: self.edit_remote())
+        self.o_mon = self.field(self.loc_fr, "sal.monitor", "Monitor", lambda r: ttk.Combobox(
+            r, state="readonly", width=30, takefocus=0, postcommand=self.list_monitors), fill="x", expand=True)
+        self.o_mon.bind("<<ComboboxSelected>>", lambda e: self.pick_monitor())
+        self.o_full = self.field(self.loc_fr, "sal.completa", "", lambda r: ttk.Button(
+            r, text="Pantalla completa", takefocus=0, command=lambda: self.sel().set_full(not self.sel().full)),
+            fill="x", expand=True)
+        self.o_master = self.out_slider(f, "sal.master", "Brillo de esta salida (%)", "master", 0, 100)
+        self.o_content = self.field(f, "sal.contenido", "Contenido", lambda r: ttk.Combobox(
+            r, state="readonly", values=CONTENT, width=12, takefocus=0))
+        self.o_content.bind("<<ComboboxSelected>>", lambda e: self.edit_output("content", self.o_content.get()))
+        logo_slot = ttk.Frame(f)
+        logo_slot.pack(fill="x")
+        self.o_logo = tk.StringVar()
+        ent = self.field(logo_slot, "sal.logo", "Logo (PNG)", lambda r: ttk.Entry(
+            r, textvariable=self.o_logo, width=22), fill="x", expand=True)
+        r = self.logo_row = ent.master
+        self.text_entry(ent, lambda: self.set_logo(self.o_logo.get()))
+        self.reg(ttk.Button(r, text="…", width=3, command=self.browse_logo, takefocus=0),
+                 "sal.logo_buscar").pack(side="left", padx=(S("sm"), 0))
+        self.o_join = self.field(f, "sal.unirse", "Seguir los looks", lambda r: ttk.Combobox(
+            r, state="readonly", values=JOIN, width=12, takefocus=0))
+        self.o_join.bind("<<ComboboxSelected>>", lambda e: self.edit_output("join", self.o_join.get()))
+        a = self.advanced("salida_sel")
+        self.o_delay = self.out_slider(a, "sal.retardo", "Retraso de esta pantalla (ms)", "delay_ms", 0, 200)
+        port_slot = ttk.Frame(a)  # solo en una salida remota
+        port_slot.pack(fill="x")
+        self.o_port = tk.StringVar()
+        ent = self.field(port_slot, "sal.puerto", "Puerto", lambda r: ttk.Entry(
+            r, textvariable=self.o_port, width=8))
+        self.port_row = ent.master
+        self.text_entry(ent, self.edit_remote)
+
+    # --- pestaña Ayuda
+    def build_help(self):
+        ttk, S = self.ttk, self.sp
+        f = self.card("atajos", "Atajos")
+        grid = ttk.Frame(f)
+        grid.pack(fill="x")
+        # dos columnas de "teclas | acción" (una etiqueta de varias líneas por columna: sin alto extra por
+        # fila); set_keys escribe las teclas del mapa real
+        acts = list(KEYS)
+        half = (len(acts) + 1) // 2
+        self.key_cols = []
+        for col, part in enumerate((acts[:half], acts[half:])):
+            k = ttk.Label(grid, text="", style="State.TLabel", justify="left")
+            k.grid(row=0, column=2 * col, sticky="nw", padx=(S("lg") if col else 0, S("md")))
+            ttk.Label(grid, style="Muted.TLabel", justify="left", text="\n".join(
+                LOOKS[a][0] if a in LOOKS else ACTION_NAMES[a] for a in part)).grid(row=0, column=2 * col + 1,
+                                                                                     sticky="nw")
+            self.key_cols.append((k, part))
+        self.note(f, KEYS_NOTE).pack_configure(pady=(S("md"), 0))
+
+        f = self.card("ayuda", "Ayuda")
+        ttk.Label(f, text=f"LightHouse {VERSION}", style="State.TLabel").pack(anchor="w")
+        for title, path in (("Configuración", config.path()), ("Registros (lighthouse.log)", config.log_dir())):
+            ttk.Label(f, text=title, style="Muted.TLabel").pack(anchor="w", pady=(S("md"), 0))
+            ttk.Label(f, text=path, wraplength=self.px(TEXT_W)).pack(anchor="w")
+        self.reg(ttk.Button(f, text="Abrir carpeta de registros", command=self.open_logs, takefocus=0),
+                 "ayuda.carpeta").pack(anchor="w", pady=(S("md"), 0))
+
+    def open_logs(self):
+        d = config.log_dir()
+        os.makedirs(d, exist_ok=True)
+        os.startfile(d)
+
+    # --- layout responsive (fases/diseno-ui.md §3)
+    def on_root_configure(self, e):
+        """Al arrastrar el borde llegan decenas de Configure: un solo after cancelable (como Output.later)."""
+        self.later("layout", theme.tok("motion.layout_debounce"), self.relayout)
+
+    def later(self, key, ms, fn):
+        if key in self.jobs:
+            self.root.after_cancel(self.jobs[key])
+        self.jobs[key] = self.root.after(ms, lambda: (self.jobs.pop(key, None), fn()))
+
+    def relayout(self, w=None, h=None, force=False):
+        """Elige el layout para el tamaño (px lógicos; sin argumentos, el de la ventana) y recoloca solo si
+        cambió. Los widgets nunca se destruyen ni se recrean."""
+        if w is None:
+            w, h = self.root.winfo_width() / self.scale, self.root.winfo_height() / self.scale
+            if w < 50 or h < 20:  # minimizada o aún sin mapear
+                return
+        lay = layout.pick(w, h, self.vista, self.layout)
+        rows = layout.live_rows(w, lay.dense, self.live_n)
+        if force or (lay, rows) != (self.layout, self.live_n):
+            t0 = time.perf_counter()
+            self.apply_layout(lay, rows, w)
+            self.t_layout = (time.perf_counter() - t0) * 1000
+            log.info("layout: %s, %d col, looks en %d fila(s), franja en %d (%.0f × %.0f px lógicos, %.1f ms)",
+                     lay.mode, self.draw.cols, lay.look_rows, rows, w, h, self.t_layout)
+
+    def apply_layout(self, lay, rows, w):
+        """Recoloca solo las zonas cuyos parámetros cambiaron (looks, franja, tarjetas)."""
+        self.layout, self.live_n = lay, rows
+        old = self.draw
+        # F8: un resultado mini se dibuja como compacto (la vista Mini propia es F9)
+        new = self.draw = lay._replace(mode="compacto", cols=layout.cols_for(w)) if lay.mode == "mini" else lay
+        if old is None or (old.look_rows, old.dense) != (new.look_rows, new.dense):
+            self.layout_looks(new)
+        if old is None or (old.look_rows, old.dense, self.live_drawn) != (new.look_rows, new.dense, rows):
+            self.layout_live(new, rows)
+            self.live_drawn = rows
+        if old is None or old.cols != new.cols:
+            self.place_cards()
+
+    def place_cards(self):
+        """Tarjetas de la pestaña activa en sus columnas (layout.plan); las de otras pestañas, grid_remove."""
+        S = self.sp
+        want = {cid: (c, r) for cid, c, r in layout.plan(self.draw, self.tab_var.get())}
+        for cid, fr in self.cards.items():
+            if cid not in want:
+                fr.grid_remove()
+        for i, cf in enumerate(self.colfr):
+            if i < self.draw.cols:
+                cf.grid(row=0, column=i, sticky="new", padx=S("xs"))
+                self.body.columnconfigure(i, weight=1, uniform="cols")
+            else:
+                cf.grid_remove()
+                self.body.columnconfigure(i, weight=0, uniform="")
+        for cid, (c, r) in want.items():
+            self.cards[cid].grid(in_=self.colfr[c], row=r, column=0, sticky="new", pady=(0, S("sm")))
+
+    def show_tab(self):
+        self.place_cards()
+        self.body_cv.yview_moveto(0)
+
+    def fit_body(self):
+        """El Canvas del cuerpo pide el tamaño de sus tarjetas: así la ventana pide su contenido entero (solo
+        para medir; en pantalla el cuerpo toma el alto que sobra y se desplaza con on_body_view)."""
+        self.root.update_idletasks()
+        self.body_cv.configure(width=self.body.winfo_reqwidth(), height=self.body.winfo_reqheight())
+        self.on_body_view()
+
+    def on_body_view(self, e=None):
+        """Región de desplazamiento y barra: solo si las tarjetas no caben en el alto disponible."""
+        cv = self.body_cv
+        if e is not None and e.widget is cv:
+            cv.itemconfigure(self.body_win, width=e.width)
+        bh, h = self.body.winfo_reqheight(), cv.winfo_height()
+        cv.configure(scrollregion=(0, 0, cv.winfo_width(), bh))
+        need = bool(self.root.winfo_viewable()) and bh > h + 1
+        if need != self.sb_on:
+            self.sb_on = need
+            if need:
+                self.body_sb.grid(row=3, column=1, sticky="ns")
+            else:
+                self.body_sb.grid_remove()
+        if not need:
+            cv.yview_moveto(0)
+
+    @staticmethod
+    def inside(w, parent):
+        """w es parent o un descendiente suyo (por ruta de Tk; w puede ser un nombre)."""
+        s, p = str(w), str(parent)
+        return s == p or s.startswith(p + ".")
+
+    def on_wheel(self, e):
+        """La rueda solo desplaza el cuerpo de tarjetas (nunca cambia el valor de un control)."""
+        if self.sb_on and self.inside(e.widget, self.body_cv):
+            self.body_cv.yview_scroll(-1 if e.delta > 0 else 1, "units")
+
+    def measure(self, w, h, tab, forced="auto"):
+        """Tamaño pedido (px lógicos) de Control con el layout de una ventana de w × h y esa pestaña:
+        (ancho, alto, ancho del cuerpo de tarjetas). Para el self-check y el tamaño por defecto."""
+        self.tab_var.set(tab)
+        lay = layout.pick(w, h, forced)
+        self.apply_layout(lay, layout.live_rows(w, lay.dense), w)
+        self.place_cards()
+        self.fit_body()
+        self.root.update_idletasks()  # la raíz recalcula su tamaño pedido con el Canvas ya ajustado
+        s = self.scale
+        return self.root.winfo_reqwidth() / s, self.root.winfo_reqheight() / s, self.body.winfo_reqwidth() / s
+
+    def initial_geometry(self, saved):
+        """geo_control guardado -> (geometría, maximizar). WxH+X+Y válido: tal cual. Solo posición (migrada
+        de v5) o nada: el tamaño que pide el modo completo (al menos el mínimo de completo) si cabe en el área
+        de trabajo del monitor; si no, el área de trabajo (maximizada)."""
+        if outputs.GEO_RE.match(saved) and outputs.geo_ok(saved, self.mons):
+            return saved, False
+        p = POS_RE.match(saved)
+        pos = saved if p and outputs.geo_ok("1x1" + saved, self.mons) else ""
+        if saved and not pos:
+            log.warning("config: geo_control=%r no es válido o cae fuera de los monitores", saved)
+        tab, w, h = self.tab_var.get(), 0, 0
+        for t in TABS:
+            rw, rh, _ = self.measure(1366, 700, t)
+            w, h = max(w, rw), max(h, rh)
+        self.tab_var.set(tab)
+        self.place_cards()  # las de la pestaña activa (measure dejó las de la última medida)
+        w, h = self.px(max(w, layout.MEDIUM_W)), self.px(max(h, layout.COMPACT_H))
+        x, y = (int(p[1].lstrip("+")), int(p[2].lstrip("+"))) if pos else (0, 0)  # "+-8" -> -8
+        wa = win32.work_area(x + 40, y + 10)
+        fw, fh = (self.px(v) for v in FRAME_EXTRA)
+        if wa and (w + fw > wa[2] or h + fh > wa[3]):
+            return f"{wa[2] - fw}x{wa[3] - fh}" + (pos or f"+{wa[0]}+{wa[1]}"), True
+        return f"{w}x{h}{pos}", False
+
+    def set_vista(self, v):
+        """Vista: auto (por tamaño) | compacto | mini (F9; en F8 se dibuja como compacto). Inválida -> auto."""
+        if v not in layout.FORCED:
+            log.warning("config: ui.vista=%r no es válida; se usa 'auto'", v)
+            v = "auto"
+        self.vista = v
+        self.vista_cb.set(VISTAS.get(v, "Mini"))
+        if self.layout is not None and self.root.winfo_viewable():
+            self.relayout(force=True)
+
+    # --- teclado y foco
+    def set_tab_nav(self):
+        """Navegar con Tab: los controles registrados toman el foco (contorno focus); apagado, ninguno
+        (Espacio = Blackout no debe activar el botón enfocado)."""
+        on = self.tab_nav.get()
+        for w in self.ids:
+            try:
+                if w.winfo_class() in FOCUSABLE:
+                    w.configure(takefocus=1 if on else 0)
+            except self.tk.TclError:  # p. ej. el botón de Calibrar, ya cerrado
+                pass
+        if not on:
+            self.nav_focus = False
+            self.root.focus_set()
+
+    def on_focus_in(self, e):
+        w = e.widget
+        self.nav_focus = bool(self.tab_nav.get()) and w is not self.root and w in self.ids
+        if self.nav_focus and self.inside(w, self.body):  # que el control enfocado quede a la vista
+            y, h, top = w.winfo_rooty() - self.body.winfo_rooty(), w.winfo_height(), self.body_cv.canvasy(0)
+            view, total = self.body_cv.winfo_height(), max(self.body.winfo_height(), 1)
+            if y < top or y + h > top + view:
+                self.body_cv.yview_moveto(max(y - self.sp("md"), 0) / total)
+
+    def to_front(self, _=None):
+        """Clic en el aviso Teclas: trae LightHouse al frente (las teclas pasan a activas); no cambia nada más."""
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def set_bump_mouse(self, on):
+        """Botón Bump: mantener = bump (como la tecla F); se suelta también si la ventana pierde el foco."""
+        self.bump_mouse = on
+        self.scene.bump = on or self.key_bump
+
+    def set_mode(self):
+        m = self.mode.get()
+        self.eng.mode = m
+        if m in MODES:
+            self.mode_cb.current(MODES.index(m))
+
     # --- widgets
     def slider(self, fr, wid, label, attr, lo, hi, k=1.0, res=1, fn=None, init=None, key=None):
         tk = self.tk
         fn = fn or (lambda val: attr and setattr(self.eng, attr, val))
         var = tk.DoubleVar(value=round(getattr(self.eng, attr) / k, 3) if init is None else init)
-        row = self.ttk.Frame(fr); row.pack(fill="x")
-        self.ttk.Label(row, text=label, width=LABEL_W).pack(side="left", anchor="s", pady=(0, self.sp("sm")))
+        row = self.ttk.Frame(fr)
+        row.pack(fill="x")
+        self.ttk.Label(row, text=label, width=LABEL_W, wraplength=self.label_px).pack(
+            side="left", anchor="s", pady=(0, self.sp("sm")))
         sc = self.reg(tk.Scale(row, from_=lo, to=hi, resolution=res, orient="horizontal", variable=var,
                                length=self.px(SLIDER_W), takefocus=0, command=lambda v: fn(float(v) * k)), wid)
         self.style_scale(sc)
@@ -499,10 +1068,11 @@ class App:
 
     def check(self, fr, wid, label, attr):
         var = self.tk.BooleanVar(value=getattr(self.eng, attr))
-        self.reg(self.ttk.Checkbutton(fr, text=label, variable=var, takefocus=0,
-                                      command=lambda: setattr(self.eng, attr, var.get())),
-                 wid).pack(anchor="w", pady=(self.sp("sm"), 0))
+        cb = self.reg(self.ttk.Checkbutton(fr, text=label, variable=var, takefocus=0,
+                                           command=lambda: setattr(self.eng, attr, var.get())), wid)
+        cb.pack(anchor="w", pady=(self.sp("sm"), 0))
         self.checks[attr] = var
+        return cb
 
     def presets(self, fr, wid, table):
         """Combo que mueve varios sliders a la vez; luego el usuario ajusta a mano."""
@@ -517,6 +1087,13 @@ class App:
                 setattr(self.eng, attr, val * k)
         cb.bind("<<ComboboxSelected>>", apply)
         return cb
+
+    def show_photo(self):
+        """Aviso de fotosensibilidad: visible mientras "Limitar destellos" está apagado."""
+        if self.checks["flash_limit"].get():
+            self.photo.pack_forget()
+        else:
+            self.photo.pack(anchor="w", after=self.limit_cb, pady=(self.sp("xs"), 0))
 
     def nudge(self, key, d):
         """Mueve un slider (y su perilla) d unidades de la GUI, dentro de su rango."""
@@ -542,8 +1119,11 @@ class App:
             for vk in vks:
                 self.vk_actions.setdefault(vk, []).append(act)
         self.bump_vks = tuple(vk for vk, acts in self.vk_actions.items() if "bump" in acts)
+        dense = bool(self.draw and self.draw.dense)
         for lid, b in self.look_btns.items():
-            b.config(text=f"{self.keys[lid][0]}\n{LOOKS[lid][0]}")
+            b.config(text=self.look_text(lid, dense))
+        for lb, part in self.key_cols:  # tabla de atajos (pestaña Ayuda), del mapa real
+            lb.config(text="\n".join(" · ".join(key_label(n) for n in self.keys[a]) for a in part))
 
     def set_colors(self, m):
         """m = {look: ['#RRGGBB', ...]} (de config.json); un look inválido vuelve a sus colores default."""
@@ -560,7 +1140,7 @@ class App:
         self.cfg.colors = colors
         for lid, sw in self.look_sw.items():  # muestra: cómo se ve cada look
             kind, cols = LOOKS[lid][1], self.look_hex.get(lid, [])
-            white, black = ("#%02x%02x%02x" % c for c in (scene.WHITE, scene.BLACK))
+            white, black = (hexrgb(c) for c in (scene.WHITE, scene.BLACK))
             segs = ([white] if kind == "base" else [black] if kind == "black" else
                     [black, cols[0]] if kind == "split" else cols)
             sw.bind("<Configure>", lambda e, sw=sw, segs=segs: self.draw_swatch(sw, segs))
@@ -568,7 +1148,7 @@ class App:
 
     def draw_swatch(self, sw, segs):
         sw.delete("all")  # los colores de la muestra son datos del show: no pasan por theme.paint
-        w, h = sw.winfo_width(), self.px(9)
+        w, h = sw.winfo_width(), self.px(SWATCH_H + 1)
         for i, c in enumerate(segs):
             sw.create_rectangle(w * i / len(segs), 0, w * (i + 1) / len(segs) + 1, h, fill=c, width=0)
 
@@ -591,10 +1171,12 @@ class App:
 
     def poll_keys(self):
         """Teclas por GetAsyncKeyState: llegan aunque el foco de Tk esté en otra ventana de la app.
-        Acción al presionar (flanco); el bump, mientras está presionada. Sin "Teclas globales",
-        solo con un proceso LightHouse al frente; nunca mientras se escribe en un campo de texto."""
-        if self.typing or not (self.keys_global or win32.app_in_foreground()):
-            self.held, self.scene.bump = None, False
+        Acción al presionar (flanco); el bump, mientras está presionada. Decide keys_live(): nada con Ctrl
+        o Alt, escribiendo o con foco en un control; sin "Teclas globales", solo con LightHouse al frente."""
+        if not keys_live(win32.app_in_foreground(), self.keys_global, self.typing, self.nav_focus,
+                         win32.key_down(win32.VK_CONTROL), win32.key_down(win32.VK_MENU)):
+            self.held, self.key_bump = None, False
+            self.scene.bump = self.bump_mouse
             return
         down = {vk for vk in self.vk_actions if win32.key_down(vk)}
         if self.held is not None:  # None: recién recuperado el permiso, solo se toma referencia
@@ -602,7 +1184,8 @@ class App:
                 for act in self.vk_actions[vk]:
                     self.key_action(act)
         self.held = down
-        self.scene.bump = any(vk in down for vk in self.bump_vks)
+        self.key_bump = any(vk in down for vk in self.bump_vks)
+        self.scene.bump = self.key_bump or self.bump_mouse
 
     def set_agc(self):
         """AGC o ganancia fija; la referencia solo se mueve en Fija."""
@@ -652,8 +1235,10 @@ class App:
     def out_slider(self, fr, wid, label, attr, lo, hi):
         """Slider de la salida seleccionada (no va a self.vars: se guarda dentro de "outputs")."""
         var = self.tk.DoubleVar(value=lo)
-        row = self.ttk.Frame(fr); row.pack(fill="x")
-        self.ttk.Label(row, text=label, width=LABEL_W).pack(side="left", anchor="s", pady=(0, self.sp("sm")))
+        row = self.ttk.Frame(fr)
+        row.pack(fill="x")
+        self.ttk.Label(row, text=label, width=LABEL_W, wraplength=self.label_px).pack(
+            side="left", anchor="s", pady=(0, self.sp("sm")))
         sc = self.reg(self.tk.Scale(row, from_=lo, to=hi, orient="horizontal", variable=var,
                                     length=self.px(SLIDER_W), takefocus=0,
                                     command=lambda v: self.edit_output(attr, float(v))), wid)
@@ -712,8 +1297,10 @@ class App:
         o, self.loading = self.sel(), True
         try:
             self.o_name.set(o.name)
-            for w, on in ((self.loc_fr, not o.remote), (self.rem_fr, o.remote), (self.logo_row, not o.remote)):
-                w.pack(fill="x", pady=self.sp("xs") if w is self.logo_row else 0) if on else w.pack_forget()
+            for w, on in ((self.loc_fr, not o.remote), (self.rem_fr, o.remote), (self.logo_row, not o.remote),
+                          (self.port_row, o.remote)):
+                w.pack(fill="x", pady=self.sp("xs") if w in (self.logo_row, self.port_row) else 0) if on \
+                    else w.pack_forget()
             if o.remote:
                 self.o_dest.set(o.dest)
                 self.o_port.set(str(o.port))
@@ -728,6 +1315,8 @@ class App:
             self.o_join.set(o.join)
         finally:
             self.loading = False
+        if self.adv_dirty:
+            self.update_dots(self.snap if hasattr(self, "snap") else self.defaults)
 
     def edit_output(self, attr, v):
         if self.loading:
@@ -819,7 +1408,7 @@ class App:
         self.set_var("decay", 50)
         self.mode.set("pulso")
         w = self.calib["win"] = tk.Toplevel(self.root)
-        w.title("LightHouse · Calibrar retardo")
+        w.title("LightHouse · Calibrar sincronía")
         w.protocol("WM_DELETE_WINDOW", self.calib_exit)
         theme.window(w)  # fondo y barra de título del tema
         fr = ttk.Frame(w, padding=self.sp("lg"), style="Bg.TFrame")
@@ -827,9 +1416,9 @@ class App:
         ttk.Label(fr, text=CALIB_TEXT, wraplength=self.px(440), style="Bg.TLabel").pack(anchor="w")
         ttk.Label(fr, text=CALIB_WHERE, wraplength=self.px(440), style="BgMuted.TLabel").pack(
             anchor="w", pady=(self.sp("md"), 0))
-        self.reg(ttk.Button(fr, text="Salir", command=self.calib_exit, takefocus=0),
+        self.reg(ttk.Button(fr, text="Salir", command=self.calib_exit, takefocus=1 if self.tab_nav.get() else 0),
                  "calib.salir").pack(anchor="e", pady=(self.sp("md"), 0))
-        log.info("calibración de retardo: inicio")
+        log.info("calibración de sincronía: inicio")
 
     def calib_exit(self):
         c, self.calib = self.calib, None
@@ -841,7 +1430,7 @@ class App:
         self.set_var("decay", c["decay"])
         self.mode.set(c["mode"])
         c["win"].destroy()
-        log.info("calibración de retardo: fin (offset %.0f ms; retardos %s)", self.eng.offset * 1000,
+        log.info("calibración de sincronía: fin (offset %.0f ms; retardos %s)", self.eng.offset * 1000,
                  [o.delay_ms for o in self.outputs])
 
     # --- config
@@ -855,14 +1444,17 @@ class App:
                  low_priority=self.low_prio.get(), response=self.resp.get(),
                  global_keys=self.global_keys.get(), keys={a: list(v) for a, v in self.keys.items()},
                  look_colors={k: list(v) for k, v in self.look_hex.items()},
-                 outputs=[o.snapshot() for o in self.outputs], ui={"theme": self.theme_name})
+                 outputs=[o.snapshot() for o in self.outputs],
+                 ui={"theme": self.theme_name, "vista": self.vista, "tab": self.tab_var.get(),
+                     "avanzado": dict(self.adv_open), "tab_nav": self.tab_nav.get()})
         if self.root.winfo_viewable():
             self.geo["geo_control"] = self.root.geometry()
         s.update(self.geo)
         return s
 
     def apply(self, c):
-        """Aplica un dict de config (ya con tipos válidos) a widgets y motor."""
+        """Aplica un dict de config (ya con tipos válidos) a widgets y motor. La geometría la decide
+        initial_geometry() al arrancar."""
         def pick(key, allowed):
             if c[key] in allowed:
                 return True
@@ -897,6 +1489,7 @@ class App:
         if pick("response", RESPONSE):
             self.resp.set(c["response"])  # solo el nombre: los sliders ya traen sus valores
         self.set_theme(c["ui"]["theme"])
+        self.apply_ui(c["ui"])
         self.global_keys.set(c["global_keys"])
         self.set_keys(c["keys"])
         self.set_colors(c["look_colors"])
@@ -907,14 +1500,20 @@ class App:
             self.draw_palette()
         except self.tk.TclError:
             log.warning("config: paleta inválida %r; se usa el default", c["palette"])
-        g = outputs.GEO_RE.match(c["geo_control"])
-        if g and outputs.geo_ok(c["geo_control"], self.mons):
-            # solo la posición: el tamaño lo pide el contenido (cambió con las pestañas y con DPI aware)
-            self.root.geometry(g[3] + g[4])
-            self.geo["geo_control"] = c["geo_control"]
-        elif c["geo_control"]:
-            log.warning("config: geo_control=%r no es válido o cae fuera de los monitores", c["geo_control"])
+        self.show_photo()
         self.set_outputs(c["outputs"])
+
+    def apply_ui(self, u):
+        """Preferencias de interfaz (ui): vista, pestaña, "Avanzado" abiertos y Navegar con Tab."""
+        self.set_vista(u["vista"])
+        if u["tab"] not in TABS:
+            log.warning("config: ui.tab=%r no es válida; se usa 'show'", u["tab"])
+        self.tab_var.set(u["tab"] if u["tab"] in TABS else "show")
+        for cid in self.adv:
+            self.set_adv(cid, u["avanzado"].get(cid, False))
+        self.tab_nav.set(u["tab_nav"])
+        if self.draw:
+            self.show_tab()
 
     def set_theme(self, name):
         """Aplica el tema guardado (ui.theme); uno desconocido cae al por defecto con aviso. Sin selector hasta F14."""
@@ -934,16 +1533,17 @@ class App:
     def autosave(self):
         # ponytail: debounce por sondeo a 2 Hz (compara snapshots); si hiciera falta, engancharlo a cada widget
         if self.calib:  # los valores de calibración son temporales: no se guardan
-            self.root.after(500, self.autosave)
+            self.jobs["autosave"] = self.root.after(500, self.autosave)
             return
         now = time.perf_counter()
         s = self.snapshot()
         if s != self.snap:
             self.snap, self.dirty_t = s, now
+            self.update_dots(s)
         elif self.dirty_t and now - self.dirty_t >= 1.0 and s != self.saved:
             self.save()
             self.saved, self.dirty_t = s, None
-        self.root.after(500, self.autosave)
+        self.jobs["autosave"] = self.root.after(500, self.autosave)
 
     # --- audio
     def on_block(self, x):  # hilo de audio
@@ -962,6 +1562,11 @@ class App:
                 self.root.tk.call(self.fast_cmd)
             except Exception:  # aún sin mainloop (RuntimeError) o cerrando (TclError)
                 time.sleep(0.05)
+
+    def set_status(self, text, alarm=""):
+        """Estado del audio (tarjeta Fuente de audio) y su aviso corto en la franja En vivo."""
+        self.status.config(text=text)
+        self.alarm = alarm
 
     def refresh(self, prefer=None):
         names, i = self.audio.refresh(prefer)
@@ -990,7 +1595,7 @@ class App:
         i = self.dev.current()
         if not self.audio.devs or i < 0:
             self.want = None
-            self.status.config(text="Sin dispositivos de audio")
+            self.set_status("Sin dispositivos de audio", "SIN AUDIO")
             log.warning("sin dispositivos de audio")
             return
         self.want = self.dev.get()
@@ -1004,9 +1609,9 @@ class App:
             self.eng.last_sound = self.eng.t  # SIN SEÑAL cuenta sus 3 s desde que se abre
         try:
             self.audio.open(i)
-            self.status.config(text=f"{sr} Hz · {ch} canales")
+            self.set_status(f"{sr} Hz · {ch} canales")
         except Exception as ex:
-            self.status.config(text=f"Error: {ex}" + (f". {MIC_HINT}" if self.audio.is_input(i) else ""))
+            self.set_status(f"Error: {ex}" + (f". {MIC_HINT}" if self.audio.is_input(i) else ""), "ERROR DE AUDIO")
 
     def retry(self):
         """Stream caído: re-enumera y reabre el MISMO dispositivo; si no está, espera al próximo intento."""
@@ -1020,7 +1625,7 @@ class App:
         else:
             self.dev.set(name)  # se conserva (y se guarda) aunque no esté en la lista
             self.retry_t = time.perf_counter()
-            self.status.config(text=f"Reconectando… (no está: {name})")
+            self.set_status(f"Reconectando… (no está: {name})", "SIN AUDIO")
 
     # --- render
     def base_rgbs(self):
@@ -1037,14 +1642,16 @@ class App:
         por salida, compone su Frame (su retardo, su master, su regla de unirse) y pinta lo que cambió."""
         self.poll_keys()
         e, sc, cfg, now = self.eng, self.scene, self.cfg, time.perf_counter()
-        for o in self.outputs:
-            o.render(compose_output(e.sample(o.delay_ms * 0.001), sc, cfg, o.join, o.master * 0.01,
-                                    o.content == LOGO), now)
+        for i, o in enumerate(self.outputs):
+            f = compose_output(e.sample(o.delay_ms * 0.001), sc, cfg, o.join, o.master * 0.01, o.content == LOGO)
+            o.render(f, now)
+            if i == 0:
+                self.preview = f  # vista previa de la Salida 1: la pinta slow()
 
     def slow(self):
         """Loop lento (~30 Hz): watchdog de silencio, reconexión, medidores, labels e indicadores."""
         global LAST_ERROR
-        self.root.after(33, self.slow)  # primero: una excepción (p. ej. al reconectar) no detiene el loop
+        self.jobs["slow"] = self.root.after(33, self.slow)  # primero: una excepción no detiene el loop
         now = time.perf_counter()
         if now - self.last_audio > 0.2:  # el loopback deja de entregar bloques en silencio
             n = min(int((now - self.last_feed) * self.eng.sr) // BLOCK, 100)
@@ -1058,15 +1665,15 @@ class App:
         if self.want and not alive:
             if self.was_alive:
                 log.warning("el stream de %r dejó de entregar audio; reintento cada %g s", self.want, RETRY_S)
-                self.status.config(text="Sin audio: reconectando…")
+                self.set_status("Sin audio: reconectando…", "SIN AUDIO")
             if now - self.retry_t >= RETRY_S:
                 self.retry()
                 alive = self.audio.alive()
         self.was_alive = alive
         if LAST_ERROR:
-            self.status.config(text=LAST_ERROR)
+            self.set_status(LAST_ERROR, "ERROR")
             LAST_ERROR = None
-        e, put, sc = self.eng, self.put, self.scene
+        e, put, sc, chip = self.eng, self.put, self.scene, self.chip_set
         self.cfg = Cfg(master=e.vmax, gamma=e.gamma, base=tuple(self.base_rgbs()), colors=self.cfg.colors)
         self.fast()  # sin bloques (loopback en silencio, sin stream) también se pinta
         w, y = self.mw, self.my
@@ -1075,21 +1682,36 @@ class App:
         x = round(w * min(e.thresh, 1))
         put(self.meter.coords, self.line, x, y[4], x, y[5])
         put(self.dot.itemconfig, self.dot_id, fill=theme.tok("beat_on" if e.t - e.last_beat < 0.1 else "beat_off"))
+        dense = self.draw.dense
         if e.sync == "tempo" and e.bpm_src == "manual":
-            put(self.bpm.config, text=f"{e.bpm_manual:.0f} BPM (manual)")
+            put(self.bpm.config, text=f"{e.bpm_manual:.0f} BPM" + BPM_MANUAL[dense])
         else:
             put(self.bpm.config, text=f"{e.bpm:.0f} BPM" if e.bpm and e.t - e.last_beat < 2 else "-- BPM")
-        put(self.state.config, text="TECLAS EN PAUSA" if self.typing else
-            "BLACKOUT" if sc.blackout else "BUMP" if sc.bump else
-            e.mode.upper() if e.mode != "auto" else "AUTO · TRANQUILO" if e.calm else "AUTO · PULSO")
+        st = ("BLACKOUT" if sc.blackout else "BUMP" if sc.bump else e.mode.upper() if e.mode != "auto" else
+              AUTO_PREFIX + ("TRANQUILO" if e.calm else "PULSO"))
+        put(self.state.config, text=st.replace(AUTO_PREFIX, "") if dense else st)
         put(self.look_lbl.config, text=f"Look {self.keys[sc.look][0]} · {LOOKS[sc.look][0]}")
-        put(self.lead.config, text="" if e.offset >= 0 else "anticipación activa" if e.lead() else
-            "anticipación inactiva (requiere Al tempo)" if e.sync != "tempo" else
-            "anticipación inactiva (esperando BPM fiable)")
-        put(self.no_sig.config, text="SIN SEÑAL" if alive and e.t - e.last_sound > NO_SIGNAL_S else "")
-        put(self.clip.config, text="SATURA" if now - self.audio.clip_t < CLIP_S else "")
-        put(self.net_lbl.config, text="\n".join(f"{o.name}: {o.status()}" for o in self.outputs if o.remote))
-        put(self.out_warn.config, text="\n".join(
+        self.note_set(self.lead, "" if e.offset >= 0 else "anticipación activa" if e.lead() else
+                      "anticipación inactiva (requiere Al ritmo)" if e.sync != "tempo" else
+                      "anticipación inactiva (esperando BPM fiable)")  # al final de la parte básica
+        f = self.preview
+        if f:  # vista previa: lo mismo que la Salida 1 (≤ 2 configure por tick, solo si cambió)
+            for half, rgb in zip(self.prev_lr, f[:2]):
+                put(half.configure, bg=hexrgb(rgb))
+        if self.shown.get("bump") != sc.bump:
+            self.shown["bump"] = sc.bump
+            self.style_bump(sc.bump)
+        chip(self.keys_chip, *keys_chip(win32.app_in_foreground(), self.keys_global, self.typing or self.nav_focus))
+        chip(self.no_sig, "SIN SEÑAL" if alive and e.t - e.last_sound > NO_SIGNAL_S else "")
+        chip(self.clip, "SATURA" if now - self.audio.clip_t < CLIP_S else "")
+        chip(self.audio_chip, self.alarm)
+        rem = [o.status() for o in self.outputs if o.remote]
+        off = any(s == "sin red" for s in rem)
+        chip(self.net_chip, ("TV: sin red" if off else "TV: enviando") if rem else "", "warn" if off else "ok")
+        warned = [str(n) for n, o in enumerate(self.outputs, 1) if o.warn or o.logo_err]
+        chip(self.warn_chip, f"Aviso: salida {', '.join(warned)}" if warned else "")  # el detalle, en Salidas
+        self.note_set(self.net_lbl, "\n".join(f"{o.name}: {o.status()}" for o in self.outputs if o.remote))
+        self.note_set(self.out_warn, "\n".join(
             w for o in self.outputs for w in (f"{o.name}: {o.warn}" if o.warn else "", o.logo_err) if w))
 
     def put(self, fn, *args, **kw):
@@ -1100,6 +1722,8 @@ class App:
             fn(*args, **kw)
 
     def quit(self):
+        for job in self.jobs.values():
+            self.root.after_cancel(job)
         if self.headless:  # sin guardar config, sin audio abierto y sin keep_awake
             self.running = False
             self.audio.terminate()

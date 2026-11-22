@@ -198,6 +198,7 @@ def _styles(root, t):
              fieldbackground=t["surface_alt"], selectbackground=t["accent"], selectforeground=t["accent_fg"],
              font=body)
     s.configure(".", **b)
+    s.configure(".", focusthickness=2, focussolid=1)  # contorno de foco (solo con "Navegar con Tab")
     s.map(".", foreground=[("disabled", t["fg_disabled"])], background=[("disabled", t["surface"])])
     # marcos y etiquetas: por defecto sobre una tarjeta (surface); "Bg." = sobre el fondo de la ventana
     s.configure("TFrame", background=t["surface"])
@@ -206,6 +207,7 @@ def _styles(root, t):
     for name, bg, fg, font in (("Bg.TLabel", "bg", "fg", body), ("Muted.TLabel", "surface", "fg_muted", body),
                                ("Warn.TLabel", "surface", "warn", body), ("Ok.TLabel", "surface", "ok", body),
                                ("Big.TLabel", "surface", "live_fg", big), ("State.TLabel", "surface", "fg", title),
+                               ("Live.TLabel", "surface", "live_fg", title),
                                ("Legend.TLabel", "bg", "fg_muted", small), ("BgWarn.TLabel", "bg", "warn", body),
                                ("BgMuted.TLabel", "bg", "fg_muted", body)):
         s.configure(name, background=t[bg], foreground=t[fg], font=font)
@@ -243,15 +245,25 @@ def _styles(root, t):
                 bordercolor=t["border_strong"], lightcolor=t["surface_alt"], darkcolor=t["surface_alt"])
     s.map("TEntry", fieldbackground=[("disabled", t["surface"])], foreground=[("disabled", t["fg_disabled"])],
           bordercolor=[("focus", t["accent"])], lightcolor=[("focus", t["accent"])])
-    # pestañas
-    s.configure("TNotebook", background=t["bg"], bordercolor=t["border"], lightcolor=t["border"],
-                darkcolor=t["border"], tabmargins=(0, 0, 0, 0))
-    s.configure("TNotebook.Tab", background=t["surface"], foreground=t["fg_muted"], bordercolor=t["border"],
-                lightcolor=t["border"], darkcolor=t["surface"], padding=(10, 3))
-    s.map("TNotebook.Tab", background=[("selected", t["surface_alt"]), ("active", t["hover"])],
+    # segmentos (pestañas y Modo): el subrayado de acento del seleccionado es un Frame aparte (ui.segment)
+    s.configure("Seg.Toolbutton", background=t["surface"], foreground=t["fg_muted"], bordercolor=t["border"],
+                lightcolor=t["surface"], darkcolor=t["surface"], padding=(10, 3), anchor="center")
+    s.map("Seg.Toolbutton", background=[("selected", t["surface_alt"]), ("active", t["hover"])],
           foreground=[("selected", t["fg"]), ("active", t["fg"])],
-          lightcolor=[("selected", t["accent"])], darkcolor=[("selected", t["surface_alt"])],
-          expand=[("selected", (0, 0, 0, 0))])
+          lightcolor=[("selected", t["surface_alt"]), ("active", t["hover"])],
+          darkcolor=[("selected", t["surface_alt"]), ("active", t["hover"])])
+    # "Avanzado ▸": botón con aspecto de enlace
+    s.configure("Link.TButton", background=t["surface"], foreground=t["fg_muted"], bordercolor=t["surface"],
+                lightcolor=t["surface"], darkcolor=t["surface"], relief="flat", padding=(0, 2), anchor="w")
+    s.map("Link.TButton", background=[("active", t["surface"]), ("pressed", t["surface"])],
+          foreground=[("active", t["fg"]), ("pressed", t["fg"])],
+          lightcolor=[("active", t["surface"]), ("pressed", t["surface"])],
+          darkcolor=[("active", t["surface"]), ("pressed", t["surface"])],
+          bordercolor=[("focus", t["focus"])])
+    # barra de desplazamiento del cuerpo de tarjetas
+    s.configure("Vertical.TScrollbar", background=t["surface_alt"], troughcolor=t["bg"], bordercolor=t["bg"],
+                lightcolor=t["surface_alt"], darkcolor=t["surface_alt"], arrowcolor=t["fg_muted"])
+    s.map("Vertical.TScrollbar", background=[("active", t["hover"])], arrowcolor=[("active", t["fg"])])
 
 
 def _popdowns(w, t):

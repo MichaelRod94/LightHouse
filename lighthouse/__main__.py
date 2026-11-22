@@ -16,7 +16,8 @@ log = logging.getLogger("lighthouse")
 
 
 def setup_logging():
-    d = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "LightHouse", "logs")
+    from .config import log_dir
+    d = log_dir()
     os.makedirs(d, exist_ok=True)
     h = logging.handlers.RotatingFileHandler(os.path.join(d, "lighthouse.log"), maxBytes=1_000_000,
                                              backupCount=3, encoding="utf-8")

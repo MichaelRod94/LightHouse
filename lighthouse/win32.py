@@ -39,6 +39,9 @@ class _MONITORINFOEXW(ctypes.Structure):
 
 _u32.GetMonitorInfoW.argtypes = (wintypes.HMONITOR, ctypes.POINTER(_MONITORINFOEXW))
 _u32.GetMonitorInfoW.restype = wintypes.BOOL
+_u32.MonitorFromPoint.argtypes = (wintypes.POINT, wintypes.DWORD)
+_u32.MonitorFromPoint.restype = wintypes.HMONITOR
+MONITOR_DEFAULTTONEAREST = 2
 
 
 class Monitor(NamedTuple):
@@ -52,6 +55,7 @@ class Monitor(NamedTuple):
 # nombres de teclas para config.json (además de "A".."Z" y "0".."9")
 VK = {"SPACE": 0x20, "ADD": 0x6B, "SUBTRACT": 0x6D, "OEM_PLUS": 0xBB, "OEM_MINUS": 0xBD,
       **{f"NUMPAD{i}": 0x60 + i for i in range(10)}, **{f"F{i}": 0x6F + i for i in range(1, 25)}}
+VK_CONTROL, VK_MENU = 0x11, 0x12  # Ctrl y Alt (cualquiera de los dos lados)
 
 
 def set_low_priority(on: bool) -> bool:
@@ -113,6 +117,17 @@ def monitors():
     _u32.EnumDisplayMonitors(None, None, _MONITORENUMPROC(cb), 0)
     num = lambda m: int((re.findall(r"\d+", m.device) or [0])[-1])
     return sorted(out, key=lambda m: (num(m), m.device))
+
+
+def work_area(x, y):
+    """(x, y, w, h) del área de trabajo (sin la barra de tareas) del monitor más cercano al punto, o None."""
+    mi = _MONITORINFOEXW()
+    mi.cbSize = ctypes.sizeof(mi)
+    hmon = _u32.MonitorFromPoint(wintypes.POINT(int(x), int(y)), MONITOR_DEFAULTTONEAREST)
+    if not hmon or not _u32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+        return None
+    r = mi.rcWork
+    return r.left, r.top, r.right - r.left, r.bottom - r.top
 
 
 def keep_awake(on: bool) -> bool:

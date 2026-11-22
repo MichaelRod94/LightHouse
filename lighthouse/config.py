@@ -2,9 +2,11 @@
 import json
 import logging
 import os
+import re
 
 log = logging.getLogger(__name__)
-VERSION = 5
+VERSION = 6
+_SIZED = re.compile(r"^\d+x\d+(([+-]-?\d+)([+-]-?\d+))$")
 
 
 def _migrate(raw):
@@ -20,12 +22,22 @@ def _migrate(raw):
         geo = raw.pop("geo_light", "")
         raw["outputs"] = [{"geo": geo if isinstance(geo, str) else ""}]  # el resto de campos: defaults
     # v4 -> v5 (F7): aparece "ui" (theme); no transforma nada, las llaves nuevas las ponen los defaults
+    if v < 6 and isinstance(raw.get("geo_control"), str):
+        # F8: geo_control pasa a restaurar también el tamaño; el guardado era el del contenido viejo,
+        # así que solo se conserva la posición ("+X+Y") y el tamaño lo pone el default
+        g = _SIZED.match(raw["geo_control"])
+        raw["geo_control"] = g[1] if g else ""
     if v < VERSION:
         log.info("config migrada de v%s a v%d", v, VERSION)
 
 
 def path():
     return os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "LightHouse", "config.json")
+
+
+def log_dir():
+    """Carpeta de registros (lighthouse.log): %LOCALAPPDATA%/LightHouse/logs."""
+    return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "LightHouse", "logs")
 
 
 def _fit(v, d):

@@ -1,4 +1,6 @@
 """Self-check del motor con señal sintética: python -m lighthouse --test"""
+import os
+
 import numpy as np
 
 from .engine import BLOCK, BandPass, Engine, Snapshot
@@ -34,33 +36,145 @@ INTERACTIVE = {"Button", "TButton", "Checkbutton", "TCheckbutton", "Radiobutton"
 
 
 def check_sin_colores_sueltos():
-    """ui.py no tiene literales de color ni nombres de color de Tk, salvo PALETTE y KELVIN (datos del show).
-    Solo con código fuente: en el exe congelado se omite."""
+    """ui.py y layout.py no tienen literales de color ni nombres de color de Tk, salvo PALETTE y KELVIN (datos
+    del show). Solo con código fuente: en el exe congelado se omite."""
     import ast
     import re
     import sys
-    from . import ui
-    path = getattr(ui, "__file__", None)
-    if getattr(sys, "frozen", False) or not path or not path.endswith(".py"):
-        print("aviso: sin código fuente (exe), se salta el check de colores sueltos")
-        return
-    with open(path, encoding="utf-8") as f:
-        tree = ast.parse(f.read())
-    exempt = {id(n) for a in ast.walk(tree) if isinstance(a, ast.Assign)
-              and any(isinstance(t, ast.Name) and t.id in ("PALETTE", "KELVIN") for t in a.targets)
-              for n in ast.walk(a)}
-    exempt |= {id(n) for c in ast.walk(tree) if isinstance(c, ast.Compare) for n in ast.walk(c)}  # kind == "black"
-    bad = [(n.lineno, n.value) for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
-           and id(n) not in exempt and (re.fullmatch(r"#[0-9a-fA-F]{3,12}", n.value)
-                                         or n.value.lower() in COLOR_NAMES or n.value.startswith("System"))]
-    assert not bad, f"colores sueltos en ui.py: {bad}"
-    print("ok: ui.py sin literales de color (salvo PALETTE y KELVIN)")
+    from . import layout, ui
+    for mod in (ui, layout):
+        path = getattr(mod, "__file__", None)
+        if getattr(sys, "frozen", False) or not path or not path.endswith(".py"):
+            print("aviso: sin código fuente (exe), se salta el check de colores sueltos")
+            return
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        exempt = {id(n) for a in ast.walk(tree) if isinstance(a, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id in ("PALETTE", "KELVIN") for t in a.targets)
+                  for n in ast.walk(a)}
+        exempt |= {id(n) for c in ast.walk(tree) if isinstance(c, ast.Compare) for n in ast.walk(c)}  # == "black"
+        bad = [(n.lineno, n.value) for n in ast.walk(tree) if isinstance(n, ast.Constant)
+               and isinstance(n.value, str) and id(n) not in exempt
+               and (re.fullmatch(r"#[0-9a-fA-F]{3,12}", n.value) or n.value.lower() in COLOR_NAMES
+                    or n.value.startswith("System"))]
+        assert not bad, f"colores sueltos en {os.path.basename(path)}: {bad}"
+    print("ok: ui.py y layout.py sin literales de color (salvo PALETTE y KELVIN)")
+
+
+# ids del catálogo (fases/diseno-ui.md §5.4) que existen desde F8. Faltan a propósito los de F9 (vista.fijar,
+# vista.ampliar, vista.sin_foco), F10–F14 (ayuda.tutorial, ayuda.tips, ayuda.intro, ayuda.tema, tut.*) y
+# calib.salir (se crea al abrir Calibrar sincronía).
+CATALOG_F8 = {
+    *(f"look.{k}" for k in "1234567QWERTYUZ"),
+    "vivo.punto", "vivo.medidor", "vivo.bpm", "vivo.look", "vivo.estado", "vivo.previa", "vivo.teclas",
+    "vivo.sin_senal", "vivo.satura", "vivo.red", "vivo.avisos", "modo.auto", "modo.pulso", "modo.tranquilo",
+    "modo.manual", "blackout", "bump", "vista.selector", "tab.show", "tab.audio", "tab.salidas", "tab.ayuda",
+    *(f"avanzado.{c}" for c in ("respuesta", "luz", "estrobos", "teclado", "fuente", "ganancia", "filtro",
+                                "golpe", "tempo", "tranquilo", "salida_sel")),
+    "resp.preset", "golpe.sens", "resp.limite", "resp.limite_hz", "luz.master", "luz.decay", "luz.sinc_preset",
+    "luz.offset", "luz.piso", "luz.gamma", "luz.manual", "color.modo", "color.kelvin", "color.paleta",
+    "color.mas", "color.menos", "estrobo.cierre", "estrobo.min", "teclas.globales", "teclas.tab",
+    "audio.dispositivo", "audio.canal", "audio.reconectar", "audio.estado", "audio.prioridad", "nivel.auto",
+    "nivel.fijo", "nivel.ref", "filtro.preset", "filtro.corte", "golpe.pausa", "golpe.compuerta", "golpe.fuerza",
+    "tempo.kick", "tempo.ritmo", "tempo.fuente", "tempo.tap", "tempo.bpm_manual", "tempo.divisor",
+    "calma.preset", "calma.espera", "calma.suavidad", "calma.base", "calma.respira", "salidas.lista",
+    "salidas.agregar", "salidas.quitar", "salidas.tv", "salidas.identificar", "salidas.calibrar", "sal.nombre",
+    "sal.monitor", "sal.completa", "sal.destino", "sal.puerto", "sal.master", "sal.retardo", "sal.contenido",
+    "sal.logo", "sal.logo_buscar", "sal.unirse", "ayuda.carpeta"}
+
+
+def check_layout():
+    """F8 1–3: layout.pick contra los casos de §3.2, histéresis de 24 px y layout.plan."""
+    from .layout import CARDS, TABS, Layout, pick, plan
+    cases = (((1920, 1010), "completo", 4, 1), ((1366, 700), "completo", 3, 1), ((1280, 670), "completo", 3, 1),
+             ((1093, 560), "compacto", 2, 1), ((946, 1010), "medio", 2, 1), ((1906, 500), "compacto", 4, 1),
+             ((700, 420), "compacto", 1, 2), ((820, 90), "mini", 0, 1), ((400, 150), "mini", 0, 2))
+    for (w, h), mode, cols, rows in cases:
+        lay = pick(w, h)
+        assert (lay.mode, lay.cols, lay.look_rows) == (mode, cols, rows), ((w, h), lay)
+        assert lay.dense == (mode in ("compacto", "mini")), lay
+    assert pick(1366, 700, "compacto").mode == "compacto" and pick(1366, 700, "mini").mode == "mini"
+    assert pick(500, 700, "compacto").mode == "mini"  # forzar compacta no impide el mini por tamaño
+    medio, full = pick(1100, 700), pick(1300, 700)
+    assert medio.mode == "medio" and full.mode == "completo"
+    assert pick(1210, 700, prev=medio).mode == "medio" and pick(1230, 700, prev=medio).mode == "completo"
+    assert pick(1190, 700, prev=full).mode == "completo" and pick(1170, 700, prev=full).mode == "medio"
+    n = 0
+    for tab in TABS:
+        ids = sorted(c for c, _ in CARDS[tab])
+        for cols in range(1, 5):
+            p = plan(Layout("completo", cols, 1, False), tab)
+            cells = [(c, r) for _, c, r in p]
+            assert sorted(cid for cid, _, _ in p) == ids, (tab, cols, p)
+            assert all(0 <= c < cols and r >= 0 for c, r in cells), (tab, cols, p)
+            assert len(set(cells)) == len(cells), (tab, cols, p)
+            n += 1
+    assert plan(pick(820, 90), "show") == []
+    print(f"ok: layout.pick (9 casos de §3.2, forzado), histéresis 24 px, layout.plan ({n} pestaña × columnas)")
+
+
+def check_teclas():
+    """F8 6: ¿disparan las teclas? (función pura) y el aviso Teclas."""
+    from .ui import keys_chip, keys_live
+    # keys_live(al frente, globales, escribiendo, foco en un control, Ctrl, Alt)
+    assert keys_live(True, False, False, False, False, False)
+    assert not keys_live(True, False, False, False, True, False), "con Ctrl"
+    assert not keys_live(True, False, False, False, False, True), "con Alt (Alt+F4)"
+    assert not keys_live(True, False, True, False, False, False), "escribiendo"
+    assert not keys_live(True, False, False, True, False, False), "foco en un control (Navegar con Tab)"
+    assert not keys_live(False, False, False, False, False, False), "otra ventana al frente"
+    assert keys_live(False, True, False, False, False, False), "globales"
+    assert not keys_live(False, True, False, False, False, True) and not keys_live(False, True, True, False, False,
+                                                                                   False)
+    assert keys_chip(True, False, False) == ("Teclas: activas", "ok")
+    assert keys_chip(False, False, False) == ("Teclas: en otra ventana", "fg_muted")
+    assert keys_chip(False, True, False) == ("Teclas: siempre activas", "warn")
+    assert keys_chip(True, True, True) == ("Teclas: en pausa", "warn")
+    print("ok: teclas: nada con Ctrl/Alt, escribiendo, con foco en un control ni sin estar al frente (salvo "
+          "globales); aviso Teclas")
+
+
+SIZES = (  # caso, ventana de referencia (px lógicos), máximos pedidos de §3.5 (None = sin límite)
+    ("completo, 3 col", 1366, 700, 3, (1280, 660)), ("medio, 2 col", 946, 1010, 2, (900, None)),
+    ("compacto, 4 col", 1906, 500, 4, (1880, 480)), ("compacto, 1 col", 700, 420, 1, (420, None)))
+
+
+def check_tamanos():
+    """F8 4: tamaño pedido de Control (px lógicos, "Avanzado" plegados) por modo y pestaña, al 100 % y al 150 %.
+    Con los avisos de la franja en su caso más ancho habitual (Teclas: en otra ventana · TV: enviando).
+    Compacto de 1 columna: el límite de 420 es el del cuerpo de tarjetas; la ventana entera debe caber en la
+    de referencia (700). Tolerancia de 1 px por el redondeo de px() a escala no entera."""
+    from . import layout
+    from .ui import App
+    out = []
+    for scaling, pct in ((96 / 72, 100), (2.0, 150)):
+        app = App(headless=True, scaling=scaling)
+        try:
+            assert abs(app.scale - pct / 100) < 0.01, app.scale
+            app.chip_set(app.keys_chip, "Teclas: en otra ventana", "fg_muted")
+            app.chip_set(app.net_chip, "TV: enviando", "ok")
+            for name, w, h, cols, (mw, mh) in SIZES:
+                big = [0, 0, 0]
+                for tab in layout.TABS:
+                    rw, rh, bw = app.measure(w, h, tab)
+                    assert app.draw.cols == cols, (name, app.draw)
+                    if cols == 1:
+                        assert bw <= mw + 1 and rw <= w, f"{name} {pct} % {tab}: cuerpo {bw:.0f}, ventana {rw:.0f}"
+                    else:
+                        assert rw <= mw + 1, f"{name} {pct} % {tab}: ancho {rw:.0f} > {mw}"
+                    assert mh is None or rh <= mh + 1, f"{name} {pct} % {tab}: alto {rh:.0f} > {mh}"
+                    big = [max(a, b) for a, b in zip(big, (rw, rh, bw))]
+                out.append(f"{name} {pct} %: {big[0]:.0f}×{big[1]:.0f}" + (f" (cuerpo {big[2]:.0f})" if cols == 1
+                                                                            else ""))
+        finally:
+            app.quit()
+    print("ok: tamaños pedidos (máx. de las 4 pestañas): " + " · ".join(out))
 
 
 def check_interfaz():
-    """App(headless=True): ids de todos los controles, config v4 -> v5 y repintado al cambiar de tema."""
+    """App(headless=True): ids de todos los controles (y del catálogo de F8), config v4/v5 -> v6, preferencias
+    de interfaz y repintado al cambiar de tema."""
     import json
-    import os
     import tempfile
     import time
     from . import config, theme
@@ -69,10 +183,14 @@ def check_interfaz():
     app = App(headless=True)
     try:
         ids, dup, missing = {}, [], []
+        lights = {str(o.win) for o in app.outputs if not o.remote}  # salidas: superficies de luz, no Control
 
         def walk(w):
             for c in w.winfo_children():
-                if c.winfo_class() in INTERACTIVE:
+                if str(c) in lights:
+                    continue
+                clickable = any(b in ("<Button-1>", "<ButtonPress-1>", "<1>") for b in c.bind())  # clic propio
+                if c.winfo_class() in INTERACTIVE or clickable:
                     i = app.ids.get(c)
                     if not i:
                         missing.append(str(c))
@@ -86,25 +204,56 @@ def check_interfaz():
         assert not dup, f"ids repetidos: {dup}"
         assert not app.root.winfo_viewable() and all(not o.win.winfo_viewable() for o in app.outputs)
         assert dt < 3, f"la interfaz sin ventana tardó {dt:.1f} s"
-        print(f"ok: interfaz sin ventana: {len(ids)} controles con id, sin repetidos ({dt:.2f} s)")
+        reg = set(app.ids.values())
+        lost = CATALOG_F8 - reg
+        assert not lost, f"ids del catálogo sin control: {sorted(lost)}"
+        extra = sorted(reg - CATALOG_F8)
+        print(f"ok: interfaz sin ventana: {len(ids)} controles con id, sin repetidos; catálogo de F8 completo "
+              f"({len(CATALOG_F8)} ids; fuera del catálogo: {', '.join(extra)}) ({dt:.2f} s)")
 
-        # config v4 guardada -> v5 con ui.theme y sin perder ninguna otra llave
+        # config v4 y v5 guardadas -> v6, sin perder ninguna otra llave; v5: geo_control conserva la posición
         defaults, old = app.snapshot(), os.environ.get("APPDATA")
-        with tempfile.TemporaryDirectory() as d:
-            os.environ["APPDATA"] = d
-            try:
-                v4 = {k: v for k, v in defaults.items() if k != "ui"}
-                v4.update(version=4, decay=321.0, global_keys=True)
-                os.makedirs(os.path.dirname(config.path()))
-                with open(config.path(), "w", encoding="utf-8") as f:
-                    json.dump(v4, f)
-                out = config.load(defaults)
-            finally:
-                os.environ.pop("APPDATA") if old is None else os.environ.update(APPDATA=old)
-        assert config.VERSION == 5 and out["ui"] == {"theme": "oscuro"}, out["ui"]
+
+        def load(raw):
+            with tempfile.TemporaryDirectory() as d:
+                os.environ["APPDATA"] = d
+                try:
+                    os.makedirs(os.path.dirname(config.path()))
+                    with open(config.path(), "w", encoding="utf-8") as f:
+                        json.dump(raw, f)
+                    return config.load(defaults)
+                finally:
+                    os.environ.pop("APPDATA") if old is None else os.environ.update(APPDATA=old)
+        v4 = {k: v for k, v in defaults.items() if k != "ui"}
+        v4.update(version=4, decay=321.0, global_keys=True)
+        out = load(v4)
+        assert config.VERSION == 6 and out["ui"] == defaults["ui"], out["ui"]
         lost = [k for k, v in v4.items() if k != "version" and out[k] != v]
         assert not lost and set(out) == set(defaults), (lost, set(defaults) ^ set(out))
-        print("ok: config v4 -> v5: ui.theme = oscuro y ninguna otra llave perdida")
+        v5 = dict(v4, version=5, geo_control="1203x581+100+50", ui={"theme": "oscuro"})
+        out = load(v5)
+        assert out["geo_control"] == "+100+50" and out["ui"] == defaults["ui"], (out["geo_control"], out["ui"])
+        geo, _ = app.initial_geometry(out["geo_control"])
+        assert geo.endswith("+100+50") and not geo.startswith("1203x581"), geo  # posición sí, tamaño viejo no
+        assert load(dict(v5, geo_control="basura"))["geo_control"] == ""
+        app.set_vista("xyz")
+        assert app.vista == "auto" and app.vista_cb.get() == "Automática"
+        app.set_vista("mini")  # F9: se acepta (en F8 se dibuja como compacto)
+        assert app.vista == "mini"
+        # preferencias de interfaz: vista, pestaña, "Avanzado" abiertos y Navegar con Tab van y vuelven
+        app.set_vista("compacto")
+        app.tab_var.set("audio")
+        app.set_adv("luz", True)
+        app.tab_nav.set(True)
+        u = app.snapshot()["ui"]
+        assert (u["vista"], u["tab"], u["avanzado"]["luz"], u["tab_nav"]) == ("compacto", "audio", True, True), u
+        app.apply_ui(defaults["ui"])
+        assert app.snapshot()["ui"] == defaults["ui"]
+        app.apply_ui(u)
+        assert app.snapshot()["ui"] == u and app.adv["luz"][1].winfo_manager() == "pack"
+        app.apply_ui(defaults["ui"])
+        print("ok: config v4/v5 -> v6 (geo_control: posición sí, tamaño por defecto; ui.vista inválida -> auto); "
+              "vista, pestaña, Avanzado y Navegar con Tab se guardan y se restauran")
 
         # repintado: un tema de prueba y de vuelta a "oscuro"
         from tkinter import ttk
@@ -123,8 +272,9 @@ def check_interfaz():
                     ("TFrame", "background", "surface", None), ("Bg.TFrame", "background", "bg", None),
                     ("TLabel", "foreground", "fg", None), ("Muted.TLabel", "foreground", "fg_muted", None),
                     ("TButton", "background", "surface_alt", None), ("TCombobox", "fieldbackground", "surface_alt", None),
-                    ("TEntry", "fieldbackground", "surface_alt", None), ("TNotebook", "background", "bg", None),
-                    ("TNotebook.Tab", "lightcolor", "accent", ["selected"]),
+                    ("TEntry", "fieldbackground", "surface_alt", None),
+                    ("Seg.Toolbutton", "background", "surface_alt", ["selected"]),
+                    ("Link.TButton", "foreground", "fg_muted", None),
                     ("TCheckbutton", "indicatorforeground", "accent", None)):
                 got = str(st.lookup(style, opt, state)).lower()
                 assert got == t[token].lower(), f"{tag}: ttk {style} {opt}: {got} != {token} {t[token]}"
@@ -397,3 +547,7 @@ def selftest():
     check_tema()
     check_sin_colores_sueltos()
     check_interfaz()
+    # --- F8: layout responsive, teclas y tamaños pedidos por modo
+    check_layout()
+    check_teclas()
+    check_tamanos()
