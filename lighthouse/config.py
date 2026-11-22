@@ -4,7 +4,7 @@ import logging
 import os
 
 log = logging.getLogger(__name__)
-VERSION = 4
+VERSION = 5
 
 
 def _migrate(raw):
@@ -19,6 +19,7 @@ def _migrate(raw):
     if v < 4 and "outputs" not in raw:  # F5: la ventana Luz pasa a ser la Salida 1, en ventana, con su geometría
         geo = raw.pop("geo_light", "")
         raw["outputs"] = [{"geo": geo if isinstance(geo, str) else ""}]  # el resto de campos: defaults
+    # v4 -> v5 (F7): aparece "ui" (theme); no transforma nada, las llaves nuevas las ponen los defaults
     if v < VERSION:
         log.info("config migrada de v%s a v%d", v, VERSION)
 

@@ -358,12 +358,12 @@ Rework de la ventana **Control**: responsive, con ayudas al pasar el ratón, tut
 
 | Fase | Prompt | Depende de | Estado | Notas |
 |---|---|---|---|---|
-| F7 | [Tokens, tema por defecto y registro de controles](F7-tokens-tema.md) | F6 | ⬜ | |
+| F7 | [Tokens, tema por defecto y registro de controles](F7-tokens-tema.md) | F6 | ✅ | 2026-11-22: `lighthouse/theme.py` (tokens "oscuro", `get/validate/px/contrast/paint/window/apply`, `CONTRAST_PAIRS`), `win32.set_dark_titlebar/set_caption_color`, config v5 (`ui.theme`), `App(headless, scaling)`, `App.ids`, 7 checks nuevos en `--test` (~4,5 s). **CPU** (arnés 100 bloques/s, 4 s, A/B con HEAD, máquina con ruido): antes 7,0–12,1 % (media 9,5), después 6,6–10,9 % (media 8,6): sin subida medible. Control: 1203×581 al 100 % y 1756×830 al 150 % (`scaling=2.0`; antes 1085×576). `.\build.ps1` OK (57,1 MB). Pendiente manual: Windows 10 (barra de título), 3 monitores, hover a ojo. **Notas para F8**: `theme.apply(root, nombre_o_dict)` es el único punto de ttk/option/barra/alpha y se puede repetir; colores de widgets `tk` solo con `theme.paint(w, [item=], opción="token")` (se recuerda y se repinta); estilos ttk con sufijo `Bg.` = sobre el fondo de ventana, el resto sobre tarjeta (`surface`); `App.ids` (widget → id del catálogo §5.4; helpers `slider/check/presets/out_slider/field` exigen el `id`), `App.px(n)` / `App.sp("md")` para medidas, `App.scale`; `App(headless=True, scaling=2.0)` + `app.quit()` para medir `winfo_reqwidth` sin ventana; el nombre del botón de look usa `font.look` (negrita) en todos para que el ancho no cambie al elegir. |
 | F8 | [Arquitectura de información y layout responsive](F8-layout-responsive.md) | F7 | ⬜ | |
 | F9 | [Modo mini, siempre encima y tecla F9](F9-modo-mini.md) | F8 | ⬜ | |
 | F10 | [Tooltips en todos los controles](F10-tooltips.md) | F9 | ⬜ | |
 | F11 | [Tutorial interactivo omisible](F11-tutorial.md) | F10 | ⬜ | |
-| F12 | [Intro: tres propuestas (Blender)](F12-intro-propuestas.md) | — | ⬜ | Termina **deteniéndose para que el usuario elija** A, B o C. |
+| F12 | [Intro: tres propuestas (Blender)](F12-intro-propuestas.md) | — | 🔄 | Propuestas listas en `fases/intro-propuestas/`; falta la elección del usuario. Comparación en [`intro-propuestas/LEEME.md`](intro-propuestas/LEEME.md). |
 | F13 | [Intro: implementación de la elegida](F13-intro-implementacion.md) | F12 + elección del usuario, F8 (mejor después de F11) | ⬜ | |
 | F14 | [Temas: oscuro, vaporwave, glass y blue ocean](F14-temas.md) | F7 y F8 (mejor al final, después de F11 y F13) | ⬜ | |
 

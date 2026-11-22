@@ -27,6 +27,140 @@ def check_filtro_scipy():
     print("ok: filtro propio coincide con scipy (±2 dB en banda, ≥20 dB de atenuación a 1 kHz)")
 
 
+COLOR_NAMES = {"black", "white", "red", "green", "blue", "yellow", "orange", "purple", "pink", "brown", "cyan",
+               "magenta", "gray", "grey", "gold", "navy", "teal", "maroon", "lime", "silver"}
+INTERACTIVE = {"Button", "TButton", "Checkbutton", "TCheckbutton", "Radiobutton", "TRadiobutton", "Scale",
+               "TCombobox", "TEntry", "Entry", "Listbox"}
+
+
+def check_sin_colores_sueltos():
+    """ui.py no tiene literales de color ni nombres de color de Tk, salvo PALETTE y KELVIN (datos del show).
+    Solo con código fuente: en el exe congelado se omite."""
+    import ast
+    import re
+    import sys
+    from . import ui
+    path = getattr(ui, "__file__", None)
+    if getattr(sys, "frozen", False) or not path or not path.endswith(".py"):
+        print("aviso: sin código fuente (exe), se salta el check de colores sueltos")
+        return
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    exempt = {id(n) for a in ast.walk(tree) if isinstance(a, ast.Assign)
+              and any(isinstance(t, ast.Name) and t.id in ("PALETTE", "KELVIN") for t in a.targets)
+              for n in ast.walk(a)}
+    exempt |= {id(n) for c in ast.walk(tree) if isinstance(c, ast.Compare) for n in ast.walk(c)}  # kind == "black"
+    bad = [(n.lineno, n.value) for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+           and id(n) not in exempt and (re.fullmatch(r"#[0-9a-fA-F]{3,12}", n.value)
+                                         or n.value.lower() in COLOR_NAMES or n.value.startswith("System"))]
+    assert not bad, f"colores sueltos en ui.py: {bad}"
+    print("ok: ui.py sin literales de color (salvo PALETTE y KELVIN)")
+
+
+def check_interfaz():
+    """App(headless=True): ids de todos los controles, config v4 -> v5 y repintado al cambiar de tema."""
+    import json
+    import os
+    import tempfile
+    import time
+    from . import config, theme
+    from .ui import App
+    t0 = time.perf_counter()
+    app = App(headless=True)
+    try:
+        ids, dup, missing = {}, [], []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if c.winfo_class() in INTERACTIVE:
+                    i = app.ids.get(c)
+                    if not i:
+                        missing.append(str(c))
+                    elif i in ids:
+                        dup.append(i)
+                    ids[i] = c
+                walk(c)
+        walk(app.root)
+        dt = time.perf_counter() - t0
+        assert not missing, f"controles sin id: {missing}"
+        assert not dup, f"ids repetidos: {dup}"
+        assert not app.root.winfo_viewable() and all(not o.win.winfo_viewable() for o in app.outputs)
+        assert dt < 3, f"la interfaz sin ventana tardó {dt:.1f} s"
+        print(f"ok: interfaz sin ventana: {len(ids)} controles con id, sin repetidos ({dt:.2f} s)")
+
+        # config v4 guardada -> v5 con ui.theme y sin perder ninguna otra llave
+        defaults, old = app.snapshot(), os.environ.get("APPDATA")
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["APPDATA"] = d
+            try:
+                v4 = {k: v for k, v in defaults.items() if k != "ui"}
+                v4.update(version=4, decay=321.0, global_keys=True)
+                os.makedirs(os.path.dirname(config.path()))
+                with open(config.path(), "w", encoding="utf-8") as f:
+                    json.dump(v4, f)
+                out = config.load(defaults)
+            finally:
+                os.environ.pop("APPDATA") if old is None else os.environ.update(APPDATA=old)
+        assert config.VERSION == 5 and out["ui"] == {"theme": "oscuro"}, out["ui"]
+        lost = [k for k, v in v4.items() if k != "version" and out[k] != v]
+        assert not lost and set(out) == set(defaults), (lost, set(defaults) ^ set(out))
+        print("ok: config v4 -> v5: ui.theme = oscuro y ninguna otra llave perdida")
+
+        # repintado: un tema de prueba y de vuelta a "oscuro"
+        from tkinter import ttk
+
+        def verify(t, tag):
+            n = 0
+            for (w, item), tokens in theme._painted.items():
+                for opt, token in tokens.items():
+                    if token.startswith("font."):
+                        continue
+                    got = str(w.itemcget(item, opt) if item is not None else w.cget(opt)).lower()
+                    assert got == t[token].lower(), f"{tag}: {w} {opt}: {got} != {token} {t[token]}"
+                    n += 1
+            st = ttk.Style(app.root)
+            for style, opt, token, state in (
+                    ("TFrame", "background", "surface", None), ("Bg.TFrame", "background", "bg", None),
+                    ("TLabel", "foreground", "fg", None), ("Muted.TLabel", "foreground", "fg_muted", None),
+                    ("TButton", "background", "surface_alt", None), ("TCombobox", "fieldbackground", "surface_alt", None),
+                    ("TEntry", "fieldbackground", "surface_alt", None), ("TNotebook", "background", "bg", None),
+                    ("TNotebook.Tab", "lightcolor", "accent", ["selected"]),
+                    ("TCheckbutton", "indicatorforeground", "accent", None)):
+                got = str(st.lookup(style, opt, state)).lower()
+                assert got == t[token].lower(), f"{tag}: ttk {style} {opt}: {got} != {token} {t[token]}"
+                n += 1
+            assert str(app.root.cget("bg")).lower() == t["bg"].lower(), tag
+            return n
+        assert len(theme._painted) >= 60, len(theme._painted)
+        test = dict(theme.get("oscuro"), bg="#102030", surface="#203040", surface_alt="#304050", fg="#FAFAF0",
+                    accent="#00AA55", fg_muted="#C0C0D0")
+        theme.apply(app.root, test)
+        n = verify(test, "prueba")
+        theme.apply(app.root, "oscuro")
+        n += verify(theme.get("oscuro"), "oscuro")
+        print(f"ok: repintado al cambiar de tema y volver: {n} colores comprobados en widgets tk y estilos ttk")
+    finally:
+        app.quit()
+
+
+def check_tema():
+    from . import theme
+    for n in theme.THEMES:
+        t = theme.get(n)
+        assert not theme.validate(t), (n, theme.validate(t))
+        assert not theme.contrast_failures(t, n), theme.contrast_failures(t, n)
+    assert theme.px(8, 1.0) == 8 and theme.px(8, 1.5) == 12
+    assert abs(theme.contrast("#000000", "#FFFFFF") - 21) < 0.01
+    assert theme.validate({"bg": "#12"}) and "falta fg" in theme.validate({})
+    theme.THEMES["_hijo"] = {"base": "oscuro", "bg": "#000000", "label": "Hijo"}  # un tema solo define lo que cambia
+    try:
+        assert theme.get("_hijo")["bg"] == "#000000" and not theme.validate(theme.get("_hijo"))
+        assert theme.get("no existe") == theme.get(theme.DEFAULT)
+    finally:
+        del theme.THEMES["_hijo"]
+    print(f"ok: {len(theme.THEMES)} tema(s) completos, {len(theme.CONTRAST_PAIRS)} pares de contraste, px()")
+
+
 def selftest():
     check_filtro_scipy()
     sr, spb = 48000, 0.5  # 120 BPM
@@ -258,3 +392,8 @@ def selftest():
     tx.close()
     rx.close()
     print("ok: emisor (127.0.0.1) -> receptor: último frame, keepalive, timeout 1 s -> solo logo sobre negro")
+
+    # --- F7: tokens, tema, contraste, ui.py sin colores sueltos, interfaz sin ventana
+    check_tema()
+    check_sin_colores_sueltos()
+    check_interfaz()

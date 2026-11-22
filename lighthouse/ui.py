@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 
-from . import config, net, outputs, scene, win32
+from . import config, net, outputs, scene, theme, win32
 from .audio import Audio
 from .engine import BLOCK, Engine
 from .outputs import JOIN, LOGO, CONTENT, MAX_OUTPUTS, compose_output, make_output, remote_output
@@ -48,6 +48,8 @@ CALIB_WHERE = ("Offset global: pestaña Show → Luz. Retardo de cada salida: pe
 MIC_HINT = ("Revisa Configuración → Privacidad → Micrófono → "
             "Permitir que las aplicaciones de escritorio accedan")
 RETRY_S, NO_SIGNAL_S, CLIP_S = 3.0, 3.0, 0.5
+METER_W, SWATCH_W, SLIDER_W = 320, 110, 200  # medidas en px lógicos (pasan por px())
+LABEL_W = 17  # ancho (en caracteres) de las etiquetas de fila
 LAST_ERROR = None  # último error no controlado; el loop lento lo muestra en el label de estado
 
 
@@ -59,10 +61,13 @@ def report(exc_type, exc, tb, where="excepción"):
 
 
 class App:
-    def __init__(self):
+    def __init__(self, headless=False, scaling=None):
+        """headless: raíz y ventanas retiradas, sin audio, sin hilo render, sin leer ni escribir config.json y
+        sin keep_awake (self-check de la interfaz). scaling: `tk scaling` previo a los widgets (2.0 = 150 %)."""
         import tkinter as tk
         from tkinter import ttk
         self.tk, self.ttk = tk, ttk
+        self.headless = headless
 
         self.eng = Engine()
         self.lock = threading.Lock()
@@ -80,8 +85,10 @@ class App:
         self.vars = {}    # llave -> (var, k, fn, lo, hi)
         self.scales = {}  # llave -> tk.Scale
         self.checks = {}  # atributo del motor -> BooleanVar
+        self.ids = {}     # widget -> id estable (fases/diseno-ui.md §5.3): tooltips (F10) y tutorial (F11)
         self.palette = list(PALETTE)
         self.geo = {"geo_control": ""}  # última geometría válida vista
+        self.theme_name = theme.DEFAULT
         self.chan_idx = 0           # 0 = Mezcla, n = Canal n
         self.want = None            # dispositivo que debe estar abierto (para reintentar)
         self.retry_t = 0.0
@@ -89,83 +96,101 @@ class App:
         self.shown = {}             # lo último que put() mandó a cada widget
 
         root = self.root = tk.Tk()
+        root.withdraw()  # sin parpadeo mientras se construye; se muestra al final (salvo headless)
+        if scaling:
+            root.tk.call("tk", "scaling", scaling)
+        self.scale = root.winfo_fpixels("1i") / 96  # 1.0 al 100 %, 1.5 al 150 %
+        theme.apply(root, theme.DEFAULT)  # antes de crear widgets: paint() lee el tema vigente
+        theme.on_apply(self.shown.clear)  # tras cambiar de tema, put() vuelve a mandar lo que cambió de color
+        root.unbind_class("TCombobox", "<MouseWheel>")  # la rueda sobre una lista no cambia su valor
         root.title("LightHouse · Control")
         root.protocol("WM_DELETE_WINDOW", self.quit)
         root.report_callback_exception = lambda *a: report(*a, where="callback de Tk")
-        win32.keep_awake(True)  # pantalla sin dormirse; quit() y __main__ (finally) lo liberan
+        if not headless:
+            win32.keep_awake(True)  # pantalla sin dormirse; quit() y __main__ (finally) lo liberan
+        P, S = self.px, self.sp
 
         # fila 0: barra de looks · fila 1: indicadores (siempre visibles) + pestañas · fila 2: ayuda.
         # Pestañas para que la ventana quepa en 1366×768 al 100 % y en 1920×1080 al 150 % (DPI aware)
-        left = ttk.Frame(root, padding=6)
+        left = ttk.Frame(root, padding=S("md"), style="Bg.TFrame")
         left.grid(row=1, column=0, sticky="n")
         self.nb = ttk.Notebook(root, takefocus=0)
-        self.nb.grid(row=1, column=1, sticky="n", padx=(0, 6), pady=(8, 6))
+        self.nb.grid(row=1, column=1, sticky="n", padx=(0, S("md")), pady=(S("md"), S("md")))
         tab = {}
         for name in ("Show", "Audio", "Salidas"):
-            t = ttk.Frame(self.nb, padding=4)
+            t = ttk.Frame(self.nb, padding=S("sm"), style="Bg.TFrame")
             self.nb.add(t, text=f"  {name}  ")
-            tab[name] = [ttk.Frame(t, padding=(4, 0)) for _ in range(2)]
+            tab[name] = [ttk.Frame(t, padding=(S("sm"), 0), style="Bg.TFrame") for _ in range(2)]
             for i, c in enumerate(tab[name]):
                 c.grid(row=0, column=i, sticky="n")
         show, aud, outs = tab["Show"], tab["Audio"], tab["Salidas"]
 
         def box(title, parent):
-            fr = ttk.LabelFrame(parent, text=title, padding=6)
-            fr.pack(fill="x", pady=3)
+            fr = ttk.LabelFrame(parent, text=title, padding=S("md"))
+            fr.pack(fill="x", pady=S("sm"))
             return fr
 
         # --- siempre visibles: lecturas, fuente de audio (estado, SIN SEÑAL, SATURA), modo y blackout
         fr = box("Lecturas", left)
-        self.meter = tk.Canvas(fr, width=320, height=56, bg="#111", highlightthickness=0)
+        self.mw = P(METER_W)                                          # ancho del medidor; ys = alturas de sus barras
+        self.my = tuple(P(v) for v in (4, 24, 32, 52, 28, 56))
+        self.meter = tk.Canvas(fr, width=self.mw, height=self.my[5], highlightthickness=0)
         self.meter.pack()
-        self.bar_l = self.meter.create_rectangle(0, 4, 0, 24, fill="#666", width=0)
-        self.bar_o = self.meter.create_rectangle(0, 32, 0, 52, fill="#eee", width=0)
-        self.line = self.meter.create_line(0, 28, 0, 56, fill="#e33", width=2)
+        theme.paint(self.meter, bg="trough")
+        self.bar_l = self.meter.create_rectangle(0, self.my[0], 0, self.my[1], width=0)
+        self.bar_o = self.meter.create_rectangle(0, self.my[2], 0, self.my[3], width=0)
+        self.line = self.meter.create_line(0, self.my[4], 0, self.my[5], width=2)
+        for item, token in ((self.bar_l, "meter_level"), (self.bar_o, "meter_hit"), (self.line, "meter_threshold")):
+            theme.paint(self.meter, item, fill=token)
+        self.reg(self.meter, "vivo.medidor")
         ttk.Label(fr, text="gris: nivel de banda · blanco: subida (golpe) · rojo: umbral",
-                  foreground="#666").pack()
+                  style="Muted.TLabel").pack()
         row = ttk.Frame(fr); row.pack(fill="x")
-        self.dot = tk.Canvas(row, width=26, height=26, highlightthickness=0)
+        self.dot = tk.Canvas(row, width=P(26), height=P(26), highlightthickness=0)
         self.dot.pack(side="left")
-        self.dot_id = self.dot.create_oval(3, 3, 23, 23, fill="#333", width=0)
-        self.bpm = ttk.Label(row, text="-- BPM", font=("Segoe UI", 18, "bold"))
-        self.bpm.pack(side="left", padx=8)
-        self.state = ttk.Label(row, text="", font=("Segoe UI", 11, "bold"))
+        theme.paint(self.dot, bg="surface")
+        self.dot_id = self.dot.create_oval(P(3), P(3), P(23), P(23), width=0)
+        theme.paint(self.dot, self.dot_id, fill="beat_off")  # slow() lo pone en beat_on con cada golpe
+        self.reg(self.dot, "vivo.punto")
+        self.bpm = self.reg(ttk.Label(row, text="-- BPM", style="Big.TLabel"), "vivo.bpm")
+        self.bpm.pack(side="left", padx=S("md"))
+        self.state = self.reg(ttk.Label(row, text="", style="State.TLabel"), "vivo.estado")
         self.state.pack(side="right")
-        self.look_lbl = ttk.Label(fr, text="", font=("Segoe UI", 18, "bold"))
+        self.look_lbl = self.reg(ttk.Label(fr, text="", style="Big.TLabel"), "vivo.look")
         self.look_lbl.pack(anchor="w")
 
         fr = box("Fuente de audio", left)
-        self.dev = ttk.Combobox(fr, state="readonly", width=44, takefocus=0)
+        self.dev = self.reg(ttk.Combobox(fr, state="readonly", width=44, takefocus=0), "audio.dispositivo")
         self.dev.pack(fill="x")
         self.dev.bind("<<ComboboxSelected>>", lambda e: self.pick_device())
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(4, 0))
+        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
         ttk.Label(row, text="Canal").pack(side="left")
-        self.chan = ttk.Combobox(row, state="readonly", values=["Mezcla"], width=9, takefocus=0)
+        self.chan = self.reg(ttk.Combobox(row, state="readonly", values=["Mezcla"], width=9, takefocus=0),
+                             "audio.canal")
         self.chan.current(0)
-        self.chan.pack(side="left", padx=6)
+        self.chan.pack(side="left", padx=S("md"))
         self.chan.bind("<<ComboboxSelected>>", lambda e: self.pick_channel())
-        self.no_sig = tk.Label(row, text="", fg="#d00", font=("Segoe UI", 9, "bold"))
-        self.no_sig.pack(side="left", padx=4)
-        self.clip = tk.Label(row, text="", fg="#e60", font=("Segoe UI", 9, "bold"))
-        self.clip.pack(side="left", padx=4)
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(4, 0))
-        ttk.Button(row, text="Reconectar", command=self.reconnect, takefocus=0).pack(side="left")
-        self.status = ttk.Label(row, text="", wraplength=250)
-        self.status.pack(side="left", padx=6)
+        self.no_sig = self.chip(row, "vivo.sin_senal", "danger_text")
+        self.clip = self.chip(row, "vivo.satura", "warn")
+        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
+        self.reg(ttk.Button(row, text="Reconectar", command=self.reconnect, takefocus=0),
+                 "audio.reconectar").pack(side="left")
+        self.status = self.reg(ttk.Label(row, text="", wraplength=P(250)), "audio.estado")
+        self.status.pack(side="left", padx=S("md"))
         self.low_prio = tk.BooleanVar(value=True)
         self.low_prio.trace_add("write", lambda *_: win32.set_low_priority(self.low_prio.get()))
-        ttk.Checkbutton(fr, text="Prioridad baja (laptop DJ)", variable=self.low_prio,
-                        takefocus=0).pack(anchor="w", pady=(4, 0))
+        self.reg(ttk.Checkbutton(fr, text="Prioridad baja (laptop DJ)", variable=self.low_prio, takefocus=0),
+                 "audio.prioridad").pack(anchor="w", pady=(S("sm"), 0))
 
         fr = box("Ganancia", aud[0])
         self.agc = tk.BooleanVar(value=self.eng.agc)
         self.checks["agc"] = self.agc
         row = ttk.Frame(fr); row.pack(fill="x")
-        ttk.Radiobutton(row, text="Automática (AGC)", value=True, variable=self.agc,
-                        takefocus=0).pack(side="left")
-        ttk.Radiobutton(row, text="Fija (la perilla manda)", value=False, variable=self.agc,
-                        takefocus=0).pack(side="left", padx=8)
-        self.slider(fr, "Referencia (dBFS)", "ref_db", -40, 0)
+        self.reg(ttk.Radiobutton(row, text="Automática (AGC)", value=True, variable=self.agc, takefocus=0),
+                 "nivel.auto").pack(side="left")
+        self.reg(ttk.Radiobutton(row, text="Fija (la perilla manda)", value=False, variable=self.agc,
+                                 takefocus=0), "nivel.fijo").pack(side="left", padx=S("md"))
+        self.slider(fr, "nivel.ref", "Referencia (dBFS)", "ref_db", -40, 0)
         self.agc.trace_add("write", lambda *_: self.set_agc())
         self.set_agc()
 
@@ -173,187 +198,219 @@ class App:
         self.mode = tk.StringVar(value=self.eng.mode)
         self.mode.trace_add("write", lambda *_: setattr(self.eng, "mode", self.mode.get()))
         for i, m in enumerate(MODES, 1):
-            ttk.Radiobutton(fr, text=f"F{i} {m.capitalize()}", value=m, variable=self.mode,
-                            takefocus=0).pack(side="left")
+            self.reg(ttk.Radiobutton(fr, text=f"F{i} {m.capitalize()}", value=m, variable=self.mode,
+                                     takefocus=0), f"modo.{m}").pack(side="left")
         self.bo = tk.BooleanVar(value=False)
-        tk.Checkbutton(fr, text="Blackout", variable=self.bo, indicatoron=False, selectcolor="#c33",
-                       takefocus=0, padx=8, command=lambda: setattr(self.scene, "blackout", self.bo.get())
-                       ).pack(side="right")
+        self.bo_btn = self.reg(tk.Checkbutton(
+            fr, text="Blackout", variable=self.bo, indicatoron=False, takefocus=0, padx=S("md"), bd=1,
+            highlightthickness=S("xs"), width=10, command=lambda: setattr(self.scene, "blackout", self.bo.get())),
+            "blackout")
+        self.bo_btn.pack(side="right")
+        self.bo.trace_add("write", lambda *_: self.style_blackout())
+        self.style_blackout()
 
         fr = box("Teclado", show[0])
         self.global_keys = tk.BooleanVar(value=False)
-        ttk.Checkbutton(fr, text="Teclas globales", variable=self.global_keys, takefocus=0).pack(anchor="w")
-        self.keys_note = ttk.Label(fr, text=LOCAL_NOTE, foreground="#666", wraplength=330)
+        self.reg(ttk.Checkbutton(fr, text="Teclas globales", variable=self.global_keys, takefocus=0),
+                 "teclas.globales").pack(anchor="w")
+        self.keys_note = ttk.Label(fr, text=LOCAL_NOTE, style="Muted.TLabel", wraplength=P(330))
         self.keys_note.pack(anchor="w")
         self.global_keys.trace_add("write", lambda *_: self.set_global_keys())
 
         fr = box("Filtro (qué escucha el detector de golpe)", aud[0])
-        self.preset = ttk.Combobox(fr, state="readonly", values=list(FILTERS), takefocus=0)
+        self.preset = self.reg(ttk.Combobox(fr, state="readonly", values=list(FILTERS), takefocus=0),
+                               "filtro.preset")
         self.preset.set("Kick (120 Hz)")
         self.preset.pack(fill="x")
         self.preset.bind("<<ComboboxSelected>>", lambda e: self.pick_filter())
-        self.band = self.slider(fr, "Corte (Hz)", "band", 40, 250, fn=self.band_from_slider)
+        self.band = self.slider(fr, "filtro.corte", "Corte (Hz)", "band", 40, 250, fn=self.band_from_slider)
 
         fr = box("Golpe", aud[0])
-        self.slider(fr, "Sensibilidad (×)", "sens", 1.0, 3.0, res=0.1)
-        self.slider(fr, "Refractario (ms)", "min_gap", 120, 500, k=0.001)
-        self.slider(fr, "Compuerta (dB)", "gate_db", -60, -30)
-        self.check(fr, "Intensidad por golpe", "by_strength")
+        self.slider(fr, "golpe.sens", "Sensibilidad (×)", "sens", 1.0, 3.0, res=0.1)
+        self.slider(fr, "golpe.pausa", "Refractario (ms)", "min_gap", 120, 500, k=0.001)
+        self.slider(fr, "golpe.compuerta", "Compuerta (dB)", "gate_db", -60, -30)
+        self.check(fr, "golpe.fuerza", "Intensidad por golpe", "by_strength")
 
         fr = box("Tempo", aud[1])
         row = ttk.Frame(fr); row.pack(fill="x")
         self.sync = tk.StringVar(value=self.eng.sync)
         self.sync.trace_add("write", lambda *_: setattr(self.eng, "sync", self.sync.get()))
-        ttk.Radiobutton(row, text="Cada kick", value="kick", variable=self.sync, takefocus=0).pack(side="left")
-        ttk.Radiobutton(row, text="Al tempo (sigue sin kick)", value="tempo", variable=self.sync,
-                        takefocus=0).pack(side="left", padx=8)
-        row = ttk.Frame(fr); row.pack(fill="x", pady=4)
-        ttk.Label(row, text="BPM", width=15).pack(side="left")
-        self.src = ttk.Combobox(row, state="readonly", values=["Detectado", "Manual / Tap"], width=13,
-                                takefocus=0)
+        self.reg(ttk.Radiobutton(row, text="Cada kick", value="kick", variable=self.sync, takefocus=0),
+                 "tempo.kick").pack(side="left")
+        self.reg(ttk.Radiobutton(row, text="Al tempo (sigue sin kick)", value="tempo", variable=self.sync,
+                                 takefocus=0), "tempo.ritmo").pack(side="left", padx=S("md"))
+        row = ttk.Frame(fr); row.pack(fill="x", pady=S("sm"))
+        ttk.Label(row, text="BPM", width=LABEL_W).pack(side="left")
+        self.src = self.reg(ttk.Combobox(row, state="readonly", values=["Detectado", "Manual / Tap"], width=13,
+                                         takefocus=0), "tempo.fuente")
         self.src.set("Detectado")
         self.src.pack(side="left")
         self.src.bind("<<ComboboxSelected>>", lambda e: setattr(
             self.eng, "bpm_src", "manual" if self.src.get().startswith("Manual") else "auto"))
-        ttk.Button(row, text="Tap [0]", command=self.tap, takefocus=0, width=8).pack(side="left", padx=6)
-        self.slider(fr, "BPM manual", "bpm_manual", 60, 200)
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(4, 0))
-        ttk.Label(row, text="Flash cada", width=15).pack(side="left")
-        div = self.div = ttk.Combobox(row, state="readonly", values=["1/1", "1/2", "1/4"], width=5, takefocus=0)
+        self.reg(ttk.Button(row, text="Tap [0]", command=self.tap, takefocus=0, width=8),
+                 "tempo.tap").pack(side="left", padx=S("md"))
+        self.slider(fr, "tempo.bpm_manual", "BPM manual", "bpm_manual", 60, 200)
+        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
+        ttk.Label(row, text="Flash cada", width=LABEL_W).pack(side="left")
+        div = self.div = self.reg(ttk.Combobox(row, state="readonly", values=["1/1", "1/2", "1/4"], width=5,
+                                               takefocus=0), "tempo.divisor")
         div.set("1/1")
         div.pack(side="left")
         div.bind("<<ComboboxSelected>>", lambda e: setattr(self.eng, "divisor", int(div.get()[2:])))
 
         fr = box("Luz", show[0])
-        self.slider(fr, "Decay (ms)", "decay", 50, 1000, k=0.001)
-        self.slider(fr, "Master (%)", "vmax", 0, 100, k=0.01)
-        self.slider(fr, "Piso pulso (%)", "vmin", 0, 50, k=0.01)
-        self.slider(fr, "Curva (gamma)", "gamma", 0.5, 3.0, res=0.1)
-        self.slider(fr, "Manual (%)", "manual", 0, 100, k=0.01)
-        self.presets(fr, OFFSETS)
-        self.slider(fr, "Offset (ms)", "offset", -150, 300, k=0.001, res=5)
-        self.lead = ttk.Label(fr, text="", foreground="#666")
+        self.slider(fr, "luz.decay", "Decay (ms)", "decay", 50, 1000, k=0.001)
+        self.slider(fr, "luz.master", "Master (%)", "vmax", 0, 100, k=0.01)
+        self.slider(fr, "luz.piso", "Piso pulso (%)", "vmin", 0, 50, k=0.01)
+        self.slider(fr, "luz.gamma", "Curva (gamma)", "gamma", 0.5, 3.0, res=0.1)
+        self.slider(fr, "luz.manual", "Manual (%)", "manual", 0, 100, k=0.01)
+        self.presets(fr, "luz.sinc_preset", OFFSETS)
+        self.slider(fr, "luz.offset", "Offset (ms)", "offset", -150, 300, k=0.001, res=5)
+        self.lead = ttk.Label(fr, text="", style="Muted.TLabel")
         self.lead.pack(anchor="w")
 
         fr = box("Respuesta", show[1])
-        self.resp = self.presets(fr, RESPONSE)
-        self.check(fr, "Limitar destellos", "flash_limit")
-        self.slider(fr, "Máx. destellos/s", "flash_limit_hz", 3, 10)
-        ttk.Label(fr, text=PHOTO_WARN, foreground="#c60", wraplength=330).pack(anchor="w")
+        self.resp = self.presets(fr, "resp.preset", RESPONSE)
+        self.check(fr, "resp.limite", "Limitar destellos", "flash_limit")
+        self.slider(fr, "resp.limite_hz", "Máx. destellos/s", "flash_limit_hz", 3, 10)
+        ttk.Label(fr, text=PHOTO_WARN, style="Warn.TLabel", wraplength=P(330)).pack(anchor="w")
 
         fr = box("Estrobos (Q–Y)", show[1])
-        self.slider(fr, "Cierre del golpe", "cierre", 0.2, 0.9, res=0.05)
-        self.slider(fr, "Mínimo (ms)", "strobe_min_ms", 20, 120)
+        self.slider(fr, "estrobo.cierre", "Cierre del golpe", "cierre", 0.2, 0.9, res=0.05)
+        self.slider(fr, "estrobo.min", "Mínimo (ms)", "strobe_min_ms", 20, 120)
 
         fr = box("Tranquilo", aud[1])
-        self.presets(fr, CALM)
-        self.slider(fr, "Entrar tras (s)", "calm_after", 2, 15)
-        self.slider(fr, "Suavizado (s)", "calm_smooth", 1, 3, res=0.1)
-        self.slider(fr, "Nivel base (%)", "calm_base", 0, 60, k=0.01)
-        self.slider(fr, "Profundidad (%)", "calm_depth", 0, 60, k=0.01)
+        self.presets(fr, "calma.preset", CALM)
+        self.slider(fr, "calma.espera", "Entrar tras (s)", "calm_after", 2, 15)
+        self.slider(fr, "calma.suavidad", "Suavizado (s)", "calm_smooth", 1, 3, res=0.1)
+        self.slider(fr, "calma.base", "Nivel base (%)", "calm_base", 0, 60, k=0.01)
+        self.slider(fr, "calma.respira", "Profundidad (%)", "calm_depth", 0, 60, k=0.01)
 
         fr = box("Color (opcional)", show[1])
-        self.color_mode = ttk.Combobox(fr, state="readonly", takefocus=0, values=COLOR_MODES)
+        self.color_mode = self.reg(ttk.Combobox(fr, state="readonly", takefocus=0, values=COLOR_MODES),
+                                   "color.modo")
         self.color_mode.set("Blanco")
         self.color_mode.pack(fill="x")
-        self.kelvin = self.slider(fr, "Temperatura (K)", None, 2000, 10000, res=100, init=4000, key="kelvin")
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(4, 0))
-        ttk.Label(row, text="Paleta", width=15).pack(side="left")
-        self.swatch = tk.Canvas(row, width=110, height=22, highlightthickness=0)
+        self.kelvin = self.slider(fr, "color.kelvin", "Temperatura (K)", None, 2000, 10000, res=100, init=4000,
+                                  key="kelvin")
+        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
+        ttk.Label(row, text="Paleta", width=LABEL_W).pack(side="left")
+        self.swatch = tk.Canvas(row, width=P(SWATCH_W), height=P(22), highlightthickness=0)
         self.swatch.pack(side="left")
-        ttk.Button(row, text="+", width=3, command=self.add_color, takefocus=0).pack(side="left", padx=2)
-        ttk.Button(row, text="−", width=3, command=self.pop_color, takefocus=0).pack(side="left")
+        theme.paint(self.swatch, bg="surface")
+        self.reg(self.swatch, "color.paleta")
+        self.reg(ttk.Button(row, text="+", width=3, command=self.add_color, takefocus=0),
+                 "color.mas").pack(side="left", padx=S("xs"))
+        self.reg(ttk.Button(row, text="−", width=3, command=self.pop_color, takefocus=0),
+                 "color.menos").pack(side="left")
         self.draw_palette()
 
         # --- pestaña Salidas: lista + campos de la seleccionada (se editan en vivo)
         fr = box("Salidas", outs[0])
-        self.out_list = tk.Listbox(fr, height=MAX_OUTPUTS, width=36, exportselection=False, activestyle="none",
-                                   takefocus=0)
+        self.out_list = self.reg(tk.Listbox(fr, height=MAX_OUTPUTS, width=36, exportselection=False,
+                                            activestyle="none", takefocus=0, bd=0, highlightthickness=1),
+                                 "salidas.lista")
+        theme.paint(self.out_list, bg="surface_alt", fg="fg", selectbackground="accent",
+                    selectforeground="accent_fg", highlightbackground="border_strong", highlightcolor="accent",
+                    font="font.body")
         self.out_list.pack(fill="x")
         self.out_list.bind("<<ListboxSelect>>", lambda e: self.show_output())
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(4, 0))
-        self.out_add = ttk.Button(row, text="Agregar", command=self.add_output, takefocus=0)
+        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
+        self.out_add = self.reg(ttk.Button(row, text="Agregar", command=self.add_output, takefocus=0),
+                                "salidas.agregar")
         self.out_add.pack(side="left")
-        self.out_del = ttk.Button(row, text="Quitar", command=self.del_output, takefocus=0)
-        self.out_del.pack(side="left", padx=6)
-        self.out_tv = ttk.Button(row, text="Agregar TV remota", command=lambda: self.add_output(True), takefocus=0)
+        self.out_del = self.reg(ttk.Button(row, text="Quitar", command=self.del_output, takefocus=0),
+                                "salidas.quitar")
+        self.out_del.pack(side="left", padx=S("md"))
+        self.out_tv = self.reg(ttk.Button(row, text="Agregar TV remota", command=lambda: self.add_output(True),
+                                          takefocus=0), "salidas.tv")
         self.out_tv.pack(side="left")
-        row = ttk.Frame(fr); row.pack(fill="x", pady=(4, 0))
-        ttk.Button(row, text="Identificar", command=self.identify, takefocus=0).pack(side="left")
-        ttk.Button(row, text="Calibrar retardo", command=self.calibrate, takefocus=0).pack(side="left", padx=6)
-        ttk.Label(fr, foreground="#666", wraplength=300, text=(
+        row = ttk.Frame(fr); row.pack(fill="x", pady=(S("sm"), 0))
+        self.reg(ttk.Button(row, text="Identificar", command=self.identify, takefocus=0),
+                 "salidas.identificar").pack(side="left")
+        self.reg(ttk.Button(row, text="Calibrar retardo", command=self.calibrate, takefocus=0),
+                 "salidas.calibrar").pack(side="left", padx=S("md"))
+        ttk.Label(fr, style="Muted.TLabel", wraplength=P(300), text=(
             "En la salida: doble clic = pantalla completa (en el monitor donde está) / ventana; Esc = ventana. "
-            "Fuera del look 1 (o en \"siempre\") la salida se une al look y oculta el logo.")).pack(anchor="w",
-                                                                                                 pady=(6, 0))
-        self.net_lbl = ttk.Label(fr, text="", foreground="#060", wraplength=300)  # estado de las salidas remotas
-        self.net_lbl.pack(anchor="w", pady=(6, 0))
+            "Fuera del look 1 (o en \"siempre\") la salida se une al look y oculta el logo.")).pack(
+            anchor="w", pady=(S("md"), 0))
+        self.net_lbl = self.reg(ttk.Label(fr, text="", style="Ok.TLabel", wraplength=P(300)),
+                                "vivo.red")  # estado de las salidas remotas
+        self.net_lbl.pack(anchor="w", pady=(S("md"), 0))
 
         fr = box("Salida seleccionada", outs[1])
         self.loading = False  # True mientras show_output() carga los campos: no escribir de vuelta
 
-        def field(label, parent=None):
-            r = ttk.Frame(parent or fr); r.pack(fill="x", pady=2)
-            ttk.Label(r, text=label, width=15).pack(side="left")
-            return r
+        def field(wid, label, make, parent=None, **pack):
+            """Fila 'etiqueta + widget'; registra el widget con su id y lo devuelve."""
+            r = ttk.Frame(parent or fr); r.pack(fill="x", pady=S("xs"))
+            ttk.Label(r, text=label, width=LABEL_W).pack(side="left")
+            w = self.reg(make(r), wid)
+            w.pack(side="left", **pack)
+            return w
 
         self.typing = False  # foco en un campo de texto: las teclas (GetAsyncKeyState) no disparan looks
         self.o_name = tk.StringVar()
-        ent = ttk.Entry(field("Nombre"), textvariable=self.o_name, width=26)
-        ent.pack(side="left", fill="x", expand=True)
+        ent = field("sal.nombre", "Nombre", lambda r: ttk.Entry(r, textvariable=self.o_name, width=26),
+                    fill="x", expand=True)
         self.text_entry(ent)
         self.o_name.trace_add("write", lambda *_: self.edit_output("name", self.o_name.get()))
         slot = ttk.Frame(fr)  # monitor y pantalla completa (local) | destino y puerto (remota)
         slot.pack(fill="x")
         self.loc_fr, self.rem_fr = ttk.Frame(slot), ttk.Frame(slot)
-        self.o_dest = ttk.Combobox(field("Destino", self.rem_fr), values=[net.AUTO], width=26, takefocus=0)
-        self.o_dest.pack(side="left", fill="x", expand=True)
+        self.o_dest = field("sal.destino", "Destino", lambda r: ttk.Combobox(r, values=[net.AUTO], width=26),
+                            self.rem_fr, fill="x", expand=True)
         self.text_entry(self.o_dest, self.edit_remote)
         self.o_dest.bind("<<ComboboxSelected>>", lambda e: self.edit_remote())
         self.o_port = tk.StringVar()
-        ent = ttk.Entry(field("Puerto", self.rem_fr), textvariable=self.o_port, width=8)
-        ent.pack(side="left")
+        ent = field("sal.puerto", "Puerto", lambda r: ttk.Entry(r, textvariable=self.o_port, width=8), self.rem_fr)
         self.text_entry(ent, self.edit_remote)
-        self.o_mon = ttk.Combobox(field("Monitor", self.loc_fr), state="readonly", width=30, takefocus=0,
-                                  postcommand=self.list_monitors)
-        self.o_mon.pack(side="left", fill="x", expand=True)
+        self.o_mon = field("sal.monitor", "Monitor", lambda r: ttk.Combobox(
+            r, state="readonly", width=30, takefocus=0, postcommand=self.list_monitors), self.loc_fr,
+            fill="x", expand=True)
         self.o_mon.bind("<<ComboboxSelected>>", lambda e: self.pick_monitor())
-        self.o_full = ttk.Button(field("", self.loc_fr), text="Pantalla completa", takefocus=0,
-                                 command=lambda: self.sel().set_full(not self.sel().full))
-        self.o_full.pack(side="left", fill="x", expand=True)
-        self.o_master = self.out_slider(fr, "Master (%)", "master", 0, 100)
-        self.o_delay = self.out_slider(fr, "Retardo extra (ms)", "delay_ms", 0, 200)
-        self.o_content = ttk.Combobox(field("Contenido"), state="readonly", values=CONTENT, width=12, takefocus=0)
-        self.o_content.pack(side="left")
+        self.o_full = field("sal.completa", "", lambda r: ttk.Button(
+            r, text="Pantalla completa", takefocus=0, command=lambda: self.sel().set_full(not self.sel().full)),
+            self.loc_fr, fill="x", expand=True)
+        self.o_master = self.out_slider(fr, "sal.master", "Master (%)", "master", 0, 100)
+        self.o_delay = self.out_slider(fr, "sal.retardo", "Retardo extra (ms)", "delay_ms", 0, 200)
+        self.o_content = field("sal.contenido", "Contenido", lambda r: ttk.Combobox(
+            r, state="readonly", values=CONTENT, width=12, takefocus=0))
         self.o_content.bind("<<ComboboxSelected>>", lambda e: self.edit_output("content", self.o_content.get()))
         logo_slot = ttk.Frame(fr)
         logo_slot.pack(fill="x")
-        r = self.logo_row = field("Logo (PNG)", logo_slot)
         self.o_logo = tk.StringVar()
-        ent = ttk.Entry(r, textvariable=self.o_logo, width=22)
-        ent.pack(side="left", fill="x", expand=True)
+        ent = field("sal.logo", "Logo (PNG)", lambda r: ttk.Entry(r, textvariable=self.o_logo, width=22),
+                    logo_slot, fill="x", expand=True)
+        r = self.logo_row = ent.master
         self.text_entry(ent, lambda: self.set_logo(self.o_logo.get()))
-        ttk.Button(r, text="…", width=3, command=self.browse_logo, takefocus=0).pack(side="left", padx=(4, 0))
-        self.o_join = ttk.Combobox(field("Unirse a looks"), state="readonly", values=JOIN, width=12, takefocus=0)
-        self.o_join.pack(side="left")
+        self.reg(ttk.Button(r, text="…", width=3, command=self.browse_logo, takefocus=0),
+                 "sal.logo_buscar").pack(side="left", padx=(S("sm"), 0))
+        self.o_join = field("sal.unirse", "Unirse a looks", lambda r: ttk.Combobox(
+            r, state="readonly", values=JOIN, width=12, takefocus=0))
         self.o_join.bind("<<ComboboxSelected>>", lambda e: self.edit_output("join", self.o_join.get()))
-        self.out_warn = ttk.Label(left, text="", foreground="#c60", wraplength=330)  # monitor ausente, logo
-        self.out_warn.pack(anchor="w", padx=4)
+        self.out_warn = self.reg(ttk.Label(left, text="", style="BgWarn.TLabel", wraplength=P(330)),
+                                 "vivo.avisos")  # monitor ausente, logo
+        self.out_warn.pack(anchor="w", padx=S("sm"))
 
         # --- looks (latch): también con el mouse; las teclas se leen en fast() (poll_keys)
-        bar = ttk.Frame(root, padding=(12, 8, 12, 0))
+        bar = ttk.Frame(root, padding=(S("lg"), S("md"), S("lg"), 0), style="Bg.TFrame")
         bar.grid(row=0, column=0, columnspan=2, sticky="ew")
         self.look_var = tk.StringVar(value=self.scene.look)
         self.look_btns, self.look_sw = {}, {}
         for i, lid in enumerate(LOOKS):
             bar.columnconfigure(i, weight=1)
-            sw = self.look_sw[lid] = tk.Canvas(bar, height=8, width=40, highlightthickness=0, bg="black")
+            sw = self.look_sw[lid] = tk.Canvas(bar, height=P(8), width=P(40), highlightthickness=0)
+            theme.paint(sw, bg="surface_alt")
             sw.grid(row=0, column=i, sticky="ew", padx=1)
-            self.look_btns[lid] = tk.Radiobutton(
-                bar, value=lid, variable=self.look_var, indicatoron=False, selectcolor="#ffd966",
-                font=("Segoe UI", 8), takefocus=0, command=lambda lid=lid: self.select_look(lid))
+            self.look_btns[lid] = self.reg(tk.Radiobutton(
+                bar, value=lid, variable=self.look_var, indicatoron=False, takefocus=0, bd=1,
+                highlightthickness=0, command=lambda lid=lid: self.select_look(lid)), f"look.{lid}")
             self.look_btns[lid].grid(row=1, column=i, sticky="ew", padx=1)
+        self.look_var.trace_add("write", lambda *_: self.style_looks())
+        self.style_looks()
 
-        ttk.Label(root, foreground="#666", padding=(8, 0, 8, 6), font=("Segoe UI", 8), text=(
+        ttk.Label(root, style="Legend.TLabel", padding=(S("md"), 0, S("md"), S("md")), text=(
             "1–7 · Q W E R T Y U · Z: looks (quedan hasta elegir otro) · Espacio: blackout · F (mantener): bump · "
             "F1–F4: modos · 0: tap · + / −: sensibilidad · Salidas: doble clic = pantalla completa, Esc = ventana")
                   ).grid(row=2, column=0, columnspan=2)
@@ -361,43 +418,97 @@ class App:
         # config: los defaults son los valores iniciales de arriba (Engine + UI); lo guardado válido los pisa
         defaults = self.snapshot()
         defaults["outputs"] = [outputs.default_output(1, self.mons)]  # plantilla de cada salida guardada
-        cfg = config.load(defaults)
+        cfg = defaults if headless else config.load(defaults)  # headless: nunca lee config.json
         self.apply(cfg)  # aplica también la prioridad (trace de low_prio) y crea las salidas
         self.snap = self.saved = self.snapshot()
         self.dirty_t = None
         self.fast_cmd = root.register(self.fast)
-        self.wake, self.running = threading.Event(), True
+        self.wake, self.running = threading.Event(), not headless
+        if headless:
+            for o in self.outputs:
+                o.win.withdraw()
+            return
         threading.Thread(target=self.waker, name="render", daemon=True).start()
         self.refresh(cfg["device"] or None)
         self.open()
+        root.deiconify()
+        root.update()  # mapea las ventanas ya; luego Control queda por encima de la Salida 1 en ventana
+        root.lift()
         self.slow()
         self.autosave()
 
     # --- widgets
-    def slider(self, fr, label, attr, lo, hi, k=1.0, res=1, fn=None, init=None, key=None):
+    # --- apariencia y registro
+    def px(self, n):
+        """px lógicos -> físicos con la escala real de la pantalla."""
+        return theme.px(n, self.scale)
+
+    def sp(self, name):
+        """Espaciado del tema (space.<name>) en px físicos."""
+        return self.px(theme.tok(f"space.{name}"))
+
+    def reg(self, widget, wid):
+        """Registra un control con su id estable (fases/diseno-ui.md §5.4) y lo devuelve."""
+        self.ids[widget] = wid
+        return widget
+
+    def chip(self, parent, wid, color):
+        """Aviso de texto de color sobre una tarjeta (SIN SEÑAL, SATURA): lo vacío no ocupa lugar visible."""
+        lb = self.reg(self.tk.Label(parent, text="", bd=0), wid)
+        theme.paint(lb, bg="surface", fg=color, font="font.title")
+        lb.pack(side="left", padx=self.sp("sm"))
+        return lb
+
+    def style_scale(self, sc):
+        theme.paint(sc, bg="surface", fg="fg", troughcolor="trough", activebackground="accent",
+                    highlightbackground="surface", highlightcolor="focus", font="font.small")
+        sc.configure(bd=1, highlightthickness=0, sliderrelief="raised", relief="flat")
+
+    def style_looks(self):
+        """Botones de look: el activo en acento con negrita (el hover es el estado active nativo de Tk)."""
+        cur = self.look_var.get()
+        for lid, b in self.look_btns.items():
+            on = lid == cur
+            theme.paint(b, bg="accent" if on else "surface_alt", fg="accent_fg" if on else "fg",
+                        activebackground="accent" if on else "hover",
+                        activeforeground="accent_fg" if on else "fg", selectcolor="accent", font="font.look")
+
+    def style_blackout(self):
+        """Blackout: borde danger y texto de alarma; activo = relleno danger, texto BLACKOUT ●."""
+        on = self.bo.get()
+        self.bo_btn.configure(text="BLACKOUT ●" if on else "Blackout")
+        theme.paint(self.bo_btn, bg="danger" if on else "surface_alt", fg="danger_fg" if on else "danger_text",
+                    activebackground="danger" if on else "hover",
+                    activeforeground="danger_fg" if on else "danger_text", selectcolor="danger",
+                    highlightbackground="danger", highlightcolor="focus", font="font.title")
+
+    # --- widgets
+    def slider(self, fr, wid, label, attr, lo, hi, k=1.0, res=1, fn=None, init=None, key=None):
         tk = self.tk
         fn = fn or (lambda val: attr and setattr(self.eng, attr, val))
         var = tk.DoubleVar(value=round(getattr(self.eng, attr) / k, 3) if init is None else init)
         row = self.ttk.Frame(fr); row.pack(fill="x")
-        self.ttk.Label(row, text=label, width=15).pack(side="left", anchor="s", pady=(0, 4))
-        sc = tk.Scale(row, from_=lo, to=hi, resolution=res, orient="horizontal", variable=var, length=200,
-                      takefocus=0, command=lambda v: fn(float(v) * k))
+        self.ttk.Label(row, text=label, width=LABEL_W).pack(side="left", anchor="s", pady=(0, self.sp("sm")))
+        sc = self.reg(tk.Scale(row, from_=lo, to=hi, resolution=res, orient="horizontal", variable=var,
+                               length=self.px(SLIDER_W), takefocus=0, command=lambda v: fn(float(v) * k)), wid)
+        self.style_scale(sc)
         sc.pack(side="left", fill="x", expand=True)
         self.vars[key or attr or label] = (var, k, fn, lo, hi)
         self.scales[key or attr or label] = sc
         return var
 
-    def check(self, fr, label, attr):
+    def check(self, fr, wid, label, attr):
         var = self.tk.BooleanVar(value=getattr(self.eng, attr))
-        self.ttk.Checkbutton(fr, text=label, variable=var, takefocus=0,
-                             command=lambda: setattr(self.eng, attr, var.get())).pack(anchor="w", pady=(4, 0))
+        self.reg(self.ttk.Checkbutton(fr, text=label, variable=var, takefocus=0,
+                                      command=lambda: setattr(self.eng, attr, var.get())),
+                 wid).pack(anchor="w", pady=(self.sp("sm"), 0))
         self.checks[attr] = var
 
-    def presets(self, fr, table):
+    def presets(self, fr, wid, table):
         """Combo que mueve varios sliders a la vez; luego el usuario ajusta a mano."""
-        cb = self.ttk.Combobox(fr, state="readonly", values=list(table), takefocus=0)
+        cb = self.reg(self.ttk.Combobox(fr, state="readonly", values=list(table), takefocus=0), wid)
         cb.set(next(iter(table)))
-        cb.pack(fill="x", pady=(4, 2))
+        cb.pack(fill="x", pady=(self.sp("sm"), self.sp("xs")))
 
         def apply(_):
             for attr, val in table[cb.get()].items():
@@ -417,7 +528,7 @@ class App:
     def set_global_keys(self):
         self.keys_global = self.global_keys.get()
         self.keys_note.config(text=GLOBAL_WARN if self.keys_global else LOCAL_NOTE,
-                              foreground="#c60" if self.keys_global else "#666")
+                              style="Warn.TLabel" if self.keys_global else "Muted.TLabel")
 
     def set_keys(self, m):
         """m = {acción: [nombres de tecla]} (de config.json); lo inválido vuelve al default."""
@@ -449,17 +560,17 @@ class App:
         self.cfg.colors = colors
         for lid, sw in self.look_sw.items():  # muestra: cómo se ve cada look
             kind, cols = LOOKS[lid][1], self.look_hex.get(lid, [])
-            segs = (["#ffffff"] if kind == "base" else ["#000000"] if kind == "black" else
-                    ["#000000", cols[0]] if kind == "split" else cols)
+            white, black = ("#%02x%02x%02x" % c for c in (scene.WHITE, scene.BLACK))
+            segs = ([white] if kind == "base" else [black] if kind == "black" else
+                    [black, cols[0]] if kind == "split" else cols)
             sw.bind("<Configure>", lambda e, sw=sw, segs=segs: self.draw_swatch(sw, segs))
             self.draw_swatch(sw, segs)
 
-    @staticmethod
-    def draw_swatch(sw, segs):
-        sw.delete("all")
-        w = sw.winfo_width()
+    def draw_swatch(self, sw, segs):
+        sw.delete("all")  # los colores de la muestra son datos del show: no pasan por theme.paint
+        w, h = sw.winfo_width(), self.px(9)
         for i, c in enumerate(segs):
-            sw.create_rectangle(w * i / len(segs), 0, w * (i + 1) / len(segs) + 1, 9, fill=c, width=0)
+            sw.create_rectangle(w * i / len(segs), 0, w * (i + 1) / len(segs) + 1, h, fill=c, width=0)
 
     def select_look(self, lid):
         self.scene.select(lid, self.eng.sample())
@@ -497,7 +608,9 @@ class App:
         """AGC o ganancia fija; la referencia solo se mueve en Fija."""
         on = self.agc.get()
         self.eng.agc = on
-        self.scales["ref_db"].config(state="disabled" if on else "normal", fg="#999" if on else "black")
+        sc = self.scales["ref_db"]
+        sc.config(state="disabled" if on else "normal")
+        theme.paint(sc, fg="fg_disabled" if on else "fg")
 
     def band_from_slider(self, hz):
         hz = int(hz)
@@ -531,18 +644,21 @@ class App:
 
     def draw_palette(self):
         self.swatch.delete("all")
-        w = 110 / len(self.palette)
+        w, h = self.px(SWATCH_W) / len(self.palette), self.px(22)
         for i, c in enumerate(self.palette):
-            self.swatch.create_rectangle(i * w, 0, (i + 1) * w, 22, fill=c, width=0)
+            self.swatch.create_rectangle(i * w, 0, (i + 1) * w, h, fill=c, width=0)
 
     # --- salidas
-    def out_slider(self, fr, label, attr, lo, hi):
+    def out_slider(self, fr, wid, label, attr, lo, hi):
         """Slider de la salida seleccionada (no va a self.vars: se guarda dentro de "outputs")."""
         var = self.tk.DoubleVar(value=lo)
         row = self.ttk.Frame(fr); row.pack(fill="x")
-        self.ttk.Label(row, text=label, width=15).pack(side="left", anchor="s", pady=(0, 4))
-        self.tk.Scale(row, from_=lo, to=hi, orient="horizontal", variable=var, length=200, takefocus=0,
-                      command=lambda v: self.edit_output(attr, float(v))).pack(side="left", fill="x", expand=True)
+        self.ttk.Label(row, text=label, width=LABEL_W).pack(side="left", anchor="s", pady=(0, self.sp("sm")))
+        sc = self.reg(self.tk.Scale(row, from_=lo, to=hi, orient="horizontal", variable=var,
+                                    length=self.px(SLIDER_W), takefocus=0,
+                                    command=lambda v: self.edit_output(attr, float(v))), wid)
+        self.style_scale(sc)
+        sc.pack(side="left", fill="x", expand=True)
         return var
 
     def text_entry(self, ent, done=None):
@@ -597,7 +713,7 @@ class App:
         try:
             self.o_name.set(o.name)
             for w, on in ((self.loc_fr, not o.remote), (self.rem_fr, o.remote), (self.logo_row, not o.remote)):
-                w.pack(fill="x", pady=2 if w is self.logo_row else 0) if on else w.pack_forget()
+                w.pack(fill="x", pady=self.sp("xs") if w is self.logo_row else 0) if on else w.pack_forget()
             if o.remote:
                 self.o_dest.set(o.dest)
                 self.o_port.set(str(o.port))
@@ -705,11 +821,14 @@ class App:
         w = self.calib["win"] = tk.Toplevel(self.root)
         w.title("LightHouse · Calibrar retardo")
         w.protocol("WM_DELETE_WINDOW", self.calib_exit)
-        fr = ttk.Frame(w, padding=12)
+        theme.window(w)  # fondo y barra de título del tema
+        fr = ttk.Frame(w, padding=self.sp("lg"), style="Bg.TFrame")
         fr.pack(fill="both", expand=True)
-        ttk.Label(fr, text=CALIB_TEXT, wraplength=440, font=("Segoe UI", 11)).pack(anchor="w")
-        ttk.Label(fr, text=CALIB_WHERE, wraplength=440, foreground="#666").pack(anchor="w", pady=(8, 0))
-        ttk.Button(fr, text="Salir", command=self.calib_exit, takefocus=0).pack(anchor="e", pady=(10, 0))
+        ttk.Label(fr, text=CALIB_TEXT, wraplength=self.px(440), style="Bg.TLabel").pack(anchor="w")
+        ttk.Label(fr, text=CALIB_WHERE, wraplength=self.px(440), style="BgMuted.TLabel").pack(
+            anchor="w", pady=(self.sp("md"), 0))
+        self.reg(ttk.Button(fr, text="Salir", command=self.calib_exit, takefocus=0),
+                 "calib.salir").pack(anchor="e", pady=(self.sp("md"), 0))
         log.info("calibración de retardo: inicio")
 
     def calib_exit(self):
@@ -736,7 +855,7 @@ class App:
                  low_priority=self.low_prio.get(), response=self.resp.get(),
                  global_keys=self.global_keys.get(), keys={a: list(v) for a, v in self.keys.items()},
                  look_colors={k: list(v) for k, v in self.look_hex.items()},
-                 outputs=[o.snapshot() for o in self.outputs])
+                 outputs=[o.snapshot() for o in self.outputs], ui={"theme": self.theme_name})
         if self.root.winfo_viewable():
             self.geo["geo_control"] = self.root.geometry()
         s.update(self.geo)
@@ -777,6 +896,7 @@ class App:
         self.low_prio.set(c["low_priority"])
         if pick("response", RESPONSE):
             self.resp.set(c["response"])  # solo el nombre: los sliders ya traen sus valores
+        self.set_theme(c["ui"]["theme"])
         self.global_keys.set(c["global_keys"])
         self.set_keys(c["keys"])
         self.set_colors(c["look_colors"])
@@ -795,6 +915,15 @@ class App:
         elif c["geo_control"]:
             log.warning("config: geo_control=%r no es válido o cae fuera de los monitores", c["geo_control"])
         self.set_outputs(c["outputs"])
+
+    def set_theme(self, name):
+        """Aplica el tema guardado (ui.theme); uno desconocido cae al por defecto con aviso. Sin selector hasta F14."""
+        if name not in theme.THEMES:
+            log.warning("config: ui.theme=%r no es un tema conocido; se usa %r", name, theme.DEFAULT)
+            name = theme.DEFAULT
+        if name != self.theme_name:
+            theme.apply(self.root, name)
+        self.theme_name = name
 
     def save(self):
         try:
@@ -940,12 +1069,12 @@ class App:
         e, put, sc = self.eng, self.put, self.scene
         self.cfg = Cfg(master=e.vmax, gamma=e.gamma, base=tuple(self.base_rgbs()), colors=self.cfg.colors)
         self.fast()  # sin bloques (loopback en silencio, sin stream) también se pinta
-        w = 320
-        put(self.meter.coords, self.bar_l, 0, 4, round(w * min(e.lb, 1)), 24)
-        put(self.meter.coords, self.bar_o, 0, 32, round(w * min(e.o_disp, 1)), 52)
+        w, y = self.mw, self.my
+        put(self.meter.coords, self.bar_l, 0, y[0], round(w * min(e.lb, 1)), y[1])
+        put(self.meter.coords, self.bar_o, 0, y[2], round(w * min(e.o_disp, 1)), y[3])
         x = round(w * min(e.thresh, 1))
-        put(self.meter.coords, self.line, x, 28, x, 56)
-        put(self.dot.itemconfig, self.dot_id, fill="white" if e.t - e.last_beat < 0.1 else "#333")
+        put(self.meter.coords, self.line, x, y[4], x, y[5])
+        put(self.dot.itemconfig, self.dot_id, fill=theme.tok("beat_on" if e.t - e.last_beat < 0.1 else "beat_off"))
         if e.sync == "tempo" and e.bpm_src == "manual":
             put(self.bpm.config, text=f"{e.bpm_manual:.0f} BPM (manual)")
         else:
@@ -971,6 +1100,11 @@ class App:
             fn(*args, **kw)
 
     def quit(self):
+        if self.headless:  # sin guardar config, sin audio abierto y sin keep_awake
+            self.running = False
+            self.audio.terminate()
+            self.root.destroy()
+            return
         self.calib_exit()  # se guardan los valores de antes de calibrar
         self.save()
         self.running = False

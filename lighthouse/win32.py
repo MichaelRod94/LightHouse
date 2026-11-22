@@ -124,6 +124,35 @@ def keep_awake(on: bool) -> bool:
     return ok
 
 
+def _dwm_set(hwnd, attr, value) -> bool:
+    """DwmSetWindowAttribute con un entero de 4 bytes; False (sin lanzar) si el sistema no lo soporta."""
+    try:
+        dwm = ctypes.WinDLL("dwmapi")
+        dwm.DwmSetWindowAttribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
+        dwm.DwmSetWindowAttribute.restype = ctypes.c_long
+        v = ctypes.c_int(value)
+        return dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v), ctypes.sizeof(v)) == 0
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
+def set_dark_titlebar(hwnd, on) -> bool:
+    """Barra de título oscura (DWMWA_USE_IMMERSIVE_DARK_MODE = 20). False si el sistema no la soporta."""
+    return _dwm_set(hwnd, 20, 1 if on else 0)
+
+
+def set_caption_color(hwnd, bg, fg) -> bool:
+    """Color de la barra de título y de su texto ('#RRGGBB'; DWMWA_CAPTION_COLOR = 35, DWMWA_TEXT_COLOR = 36,
+    COLORREF 0x00BBGGRR). Solo existe en Windows 11: en Windows 10 devuelve False y queda la barra oscura."""
+    def ref(h):
+        r, g, b = (int(h[i:i + 2], 16) for i in (1, 3, 5))
+        return r | g << 8 | b << 16
+    try:
+        return _dwm_set(hwnd, 35, ref(bg)) & _dwm_set(hwnd, 36, ref(fg))
+    except (ValueError, TypeError):
+        return False
+
+
 def window_rect(hwnd):
     """(x, y, w, h) de la ventana según GetWindowRect (para verificar la pantalla completa)."""
     r = wintypes.RECT()
