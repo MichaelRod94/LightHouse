@@ -19,6 +19,8 @@
 
 Leyenda: ⬜ pendiente · 🔄 en curso · ✅ hecha.
 
+La **Etapa 2 (interfaz)**, fases F7 en adelante, tiene su propia tabla de estado en la sección [Etapa 2: interfaz](#etapa-2-interfaz), al final de este documento.
+
 **Notas de F4 para F5:**
 - **`Engine.sample(delay_s=0.0) -> Snapshot(out, n, gate, t)`**: estado de hace `offset + delay_s`. Se llama sin lock desde el hilo Tk. El historial guarda 64 bloques (~640 ms): alcanza para offset 300 + retardo 200 ms; si se pide más, subir `maxlen`. `out` ya trae modo, master, piso y gamma; blackout y bump **no** (los decide `compose`).
 - **`scene.compose(snap, scene, cfg) -> Frame(left, right, logo_visible)`**: pura, la única que decide colores.
@@ -345,3 +347,64 @@ Cada prompt las repite.
   - La app queda funcionando.
   - `python -m lighthouse --test` pasa; desde F3 **toda fase corre `.\build.ps1` al final** y el exe debe pasar `--test`.
   - Actualizar la tabla **Estado** (✅, fecha, nota de una línea) y añadir notas para la siguiente fase si algo cambió.
+
+## Etapa 2: interfaz
+
+Rework de la ventana **Control**: responsive, con ayudas al pasar el ratón, tutorial omisible y animación de entrada. El motor, los looks, las salidas y la red (F1–F6) **no cambian**.
+
+**Especificación de diseño:** [`diseno-ui.md`](diseno-ui.md) — principios, arquitectura de información, modos por tamaño con wireframes, componentes, catálogo de tooltips, tutorial, tres conceptos de intro, sistema de tokens y tema por defecto, accesibilidad, riesgos y los cuatro temas (§13). Los prompts de fase la citan por sección (§).
+
+### Estado
+
+| Fase | Prompt | Depende de | Estado | Notas |
+|---|---|---|---|---|
+| F7 | [Tokens, tema por defecto y registro de controles](F7-tokens-tema.md) | F6 | ⬜ | |
+| F8 | [Arquitectura de información y layout responsive](F8-layout-responsive.md) | F7 | ⬜ | |
+| F9 | [Modo mini, siempre encima y tecla F9](F9-modo-mini.md) | F8 | ⬜ | |
+| F10 | [Tooltips en todos los controles](F10-tooltips.md) | F9 | ⬜ | |
+| F11 | [Tutorial interactivo omisible](F11-tutorial.md) | F10 | ⬜ | |
+| F12 | [Intro: tres propuestas (Blender)](F12-intro-propuestas.md) | — | ⬜ | Termina **deteniéndose para que el usuario elija** A, B o C. |
+| F13 | [Intro: implementación de la elegida](F13-intro-implementacion.md) | F12 + elección del usuario, F8 (mejor después de F11) | ⬜ | |
+| F14 | [Temas: oscuro, vaporwave, glass y blue ocean](F14-temas.md) | F7 y F8 (mejor al final, después de F11 y F13) | ⬜ | |
+
+Leyenda: ⬜ pendiente · 🔄 en curso · ✅ hecha.
+
+### Orden y paralelismo
+
+- **F7 → F8 → F9 → F10 → F11 van en serie**: todas modifican `lighthouse/ui.py` y no se usan ramas.
+- **F12 puede correr en paralelo con cualquiera** de las anteriores: no toca `lighthouse/`, solo `fases/intro-propuestas/`. Conviene lanzarla pronto, porque necesita una decisión del usuario.
+- **F13** necesita la elección de F12 y, como mínimo, F8. Si se lanza antes de terminar F11, no debe coincidir con otra sesión que esté tocando `ui.py`.
+- **F14 (temas)** necesita F7 (tokens, `theme.paint` y `apply` repetible) y F8 (el selector vive en la pestaña Ayuda, que nace en F8). Las paletas son solo entradas en `theme.THEMES`, pero la fase también toca `ui.py` (selector, opacidad de glass), así que **va en serie** con F8–F11 y F13; solo F12 puede correr a la vez. **Conviene dejarla para el final**: así comprueba los cuatro temas sobre el mini, los tooltips, el tutorial y la intro ya terminados. Si se lanza antes, cada fase posterior debe revisar sus capturas también en glass y vaporwave.
+
+### Decisiones de la etapa (para que las sesiones no las re-discutan)
+
+- **Tokens**: toda la apariencia de Control sale de `lighthouse/theme.py`. Cero literales de color en el código de interfaz; lo verifica el self-check. Los colores de los looks, `PALETTE` y `KELVIN` son datos del show, no tokens. Las superficies de luz (`outputs.py`, `pantalla.py`) quedan fuera.
+- **Tema por defecto "oscuro"**: oscuro neutro con acento ámbar, sobre el tema ttk `clam`. Es el "oscuro" de los cuatro temas que pidió el usuario; no hay un tema "faro" aparte (dos oscuros casi iguales confundirían).
+- **Temas** (F14): oscuro, vaporwave, glass y blue ocean, los cuatro oscuros y con la misma tipografía. Solo cambian Control, mini, tooltips, tutorial e intro; **nunca** las salidas, la pantalla remota ni los colores de los looks. Todo par texto/fondo de todo tema pasa el contraste WCAG en el self-check (`diseno-ui.md` §13.6).
+- **Glass** = opacidad de toda la ventana (`-alpha` 0,92), opaca con el puntero dentro. Mica/Acrylic y `-transparentcolor` se probaron y se descartaron (`diseno-ui.md` §13.4). Si Windows tiene la transparencia desactivada, glass se dibuja opaco.
+- **Cambio de tema en caliente**: los widgets `tk` clásicos se colorean con `theme.paint`, que recuerda opción → token; `theme.apply` se puede llamar más de una vez y repinta todo.
+- **Modos por tamaño de la ventana** (px lógicos): mini (alto < 300 o ancho < 560, o forzado) · compacto (alto < 600 o ancho < 760) · medio (ancho < 1200) · completo. Los decide la función pura `layout.pick`; las columnas de tarjetas son `clamp(ancho // 400, 1, 4)`.
+- **Siempre visibles**: look activo, señal (golpe, nivel, BPM) y Blackout.
+- **Bump tiene botón** (de mantener, junto a Blackout), además de la tecla `F`: sin él, quien aprende leyendo tooltips no lo descubre. En mini no se muestra.
+- **Aviso "Teclas"**: `activas` · `en otra ventana` · `siempre activas` · `en pausa`. En mini, un clic en la línea de estado recupera el teclado sin cambiar nada.
+- **Los widgets se crean una vez**: cambiar de modo o de pestaña solo los recoloca.
+- **Sin timers nuevos**: lo vivo de Control (indicadores, tutorial, intro) avanza desde `App.slow()` con `App.put()`. Solo se permiten `after` de un disparo y cancelables (redimensionado 120 ms, retardo del tooltip 500 ms).
+- **Registro de controles**: cada control tiene un `id` estable en `App.ids`; lo comparten tooltips y tutorial. El self-check falla si un control interactivo no tiene `id` o no tiene tooltip.
+- **Config**: las preferencias de interfaz viven en el diccionario `ui`. v5 en F7, v6 en F8 (`geo_control` pasa a guardar también el tamaño); las fases siguientes solo agregan llaves con default. `ui.theme` se normaliza al cargar (nombre desconocido → `"oscuro"`), sin subir la versión.
+- **Etiquetas**: cambian los textos visibles (tabla en `diseno-ui.md` §2.3), nunca las llaves de `config.json` ni los valores de lista que se guardan.
+- **Mini**: es una vista de la misma ventana, con barra de título; no una ventana aparte. Tira = looks + Blackout arriba y señal + estado abajo; bloque = Blackout arriba. Ampliar y F9 siempre sacan de Mini. `minsize` 360×72.
+- **Tooltips**: se muestran aunque LightHouse no esté al frente (caso mini junto a rekordbox) y también al enfocar un control con "Navegar con Tab".
+- **Tutorial**: un paso cuya condición ya se cumple al mostrarse no avanza solo (espera a Siguiente); `Enter` = Siguiente, `Esc` = omitir.
+- **Intro "sin hardcode"**: reproductor genérico + manifiesto JSON + textos de la app + colores de tokens o de looks + assets regenerables por script con Blender. Se muestra dentro de Control cuando el show ya corre. Assets ≤ 3 MB.
+- **`--pantalla`**: sin cambios; nunca muestra intro ni tutorial.
+- **Self-check de interfaz**: `App(headless=True)` construye Control con la ventana retirada, sin audio, sin salidas visibles y sin tocar `config.json`; forma parte de `--test`.
+
+### Reglas adicionales de la etapa
+
+Además de las *Reglas comunes*:
+
+- **Ventanas de prueba**: viven ≤ 5 s y se cierran en un `finally`. Nada de pantalla completa, automatización de escritorio ni navegadores: la máquina está en uso.
+- **Mediciones con config temporal**: los scripts de desarrollo apuntan `$env:APPDATA` a una carpeta temporal para no leer ni pisar la config real.
+- **Capturas**: para revisar lo visual, el implementador captura sus propias ventanas con un script en `$env:TEMP` (Pillow `ImageGrab` solo como herramienta de desarrollo; nunca en `requirements.txt`) y las mira.
+- **CPU**: cada fase mide con el mismo arnés antes y después; no debe subir más de 1 punto porcentual ni pasar de 10 % de un núcleo en show.
+- **Mensajes de commit sugeridos**: sin atribuciones ni coautores.
